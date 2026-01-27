@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V26.0",
+    page_title="颜祖美学·执行中枢 V25.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -55,7 +55,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v26_id_fix_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v25_1_feedback_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -188,7 +188,8 @@ def show_task_history(username, role):
         if not filtered_df.empty:
             filtered_df['Deadline'] = filtered_df['deadline'].apply(format_deadline)
             filtered_df['Completed'] = filtered_df['completed_at'].dt.date
-            cols_show = ['title', 'Completed', 'difficulty', 'std_time', 'quality']
+            # --- 微调：增加 'feedback' 字段 ---
+            cols_show = ['title', 'Completed', 'difficulty', 'std_time', 'quality', 'feedback']
             st.dataframe(filtered_df[cols_show].sort_values("Completed", ascending=False), use_container_width=True, hide_index=True)
             st.caption(f"共找到 {len(filtered_df)} 条记录")
         else: st.info("未找到符合条件的记录")
@@ -290,6 +291,10 @@ if nav == "📋 任务大厅":
                         st.markdown(f"**{row['title']}**")
                         st.caption(f"📅 截止: {format_deadline(row.get('deadline'))}")
                         st.markdown(f"D:{row['difficulty']} | T:{row['std_time']}")
+                        # --- 微调：查看详情 ---
+                        with st.expander("👁️ 查看详情"):
+                            st.write(row.get('description', '无详情'))
+                        
                         if st.button("⚡️ 抢单", key=f"g_{row['id']}", type="primary"):
                             can_grab = True
                             if role != 'admin':
@@ -318,6 +323,8 @@ if nav == "📋 任务大厅":
         done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
         if not done.empty:
             done['P'] = done.apply(lambda x: f"D{x['difficulty']} / T{x['std_time']} / Q{x['quality']}", axis=1)
+            # --- 微调：荣誉榜也显示反馈（如果需要）---
+            # 这里保持简洁，反馈主要在个人历史里看
             st.dataframe(done[['title', 'assignee', 'P']], use_container_width=True, hide_index=True)
 
 elif nav == "🗣️ 颜祖广场":
@@ -359,7 +366,6 @@ elif nav == "🏰 个人中心":
         with tabs[0]:
             st.info("💡 统帅自律：此处管理的任务不计积分，仅作公示与记录。")
             
-            # --- 修复点：添加 key 避免 ID 冲突 ---
             st.subheader("⚡️ 快捷派发")
             qc1, qc2 = st.columns([3, 1])
             quick_t = qc1.text_input("任务内容", placeholder="输入待办事项...", key="admin_quick_task_input")
@@ -398,7 +404,6 @@ elif nav == "🏰 个人中心":
             else:
                 st.info("暂无进行中任务")
             
-            # 历史记录 (V25)
             show_task_history(user, role)
 
         with tabs[1]: 
@@ -421,8 +426,10 @@ elif nav == "🏰 个人中心":
         with tabs[2]:
             c1, c2 = st.columns(2)
             t_name = c1.text_input("任务名称", key="pub_title")
+            # --- 微调：增加详情输入 ---
+            t_desc = st.text_area("任务详情", key="pub_desc", height=100)
+            
             col_d, col_c = c1.columns([3,2])
-            # --- 修复点：添加 key ---
             d_input = col_d.date_input("截止日期", key="pub_dead_input")
             no_d = col_c.checkbox("无截止日期", key="pub_no_dead")
             diff = c2.number_input("难度 (0-99)", value=1.0, step=0.1, key="pub_diff")
@@ -431,9 +438,16 @@ elif nav == "🏰 个人中心":
             assign = "待定"
             udf = run_query("users")
             if ttype == "指派成员": assign = st.selectbox("指派给", udf['username'].tolist(), key="pub_assignee")
+            
             if st.button("🚀 确认发布", type="primary"):
                 final_d = None if no_d else str(d_input)
-                supabase.table("tasks").insert({"title": t_name, "difficulty": diff, "std_time": stdt, "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign if ttype=="指派成员" else "待定", "deadline": final_d, "type": ttype}).execute()
+                supabase.table("tasks").insert({
+                    "title": t_name, "description": t_desc, # 插入详情
+                    "difficulty": diff, "std_time": stdt, 
+                    "status": "待领取" if ttype=="公共任务池" else "进行中", 
+                    "assignee": assign if ttype=="指派成员" else "待定", 
+                    "deadline": final_d, "type": ttype, "feedback": ""
+                }).execute()
                 st.success("已发布")
 
         with tabs[3]:
@@ -451,6 +465,7 @@ elif nav == "🏰 个人中心":
                     target = filtered[filtered['id']==sel_id].iloc[0]
                     with st.container(border=True):
                         new_title = st.text_input("修改标题", target['title'])
+                        new_desc = st.text_area("修改详情", target.get('description', ''))
                         new_diff = st.number_input("修改难度", value=float(target['difficulty']))
                         new_stdt = st.number_input("修改工时", value=float(target['std_time']))
                         new_qual = st.number_input("修改质量", value=float(target['quality']))
@@ -460,7 +475,6 @@ elif nav == "🏰 个人中心":
                         curr_d = target.get('deadline')
                         is_null_d = pd.isna(curr_d) or str(curr_d) in ['None', 'NaT', '']
                         
-                        # 使用 ID 相关的 key
                         new_no_dead = c_dead_2.checkbox("无截止日期", value=is_null_d, key=f"dead_chk_{sel_id}")
                         default_d = datetime.date.today()
                         if not is_null_d: default_d = curr_d
@@ -468,7 +482,11 @@ elif nav == "🏰 个人中心":
                         
                         if st.button("💾 确认保存修改"):
                             final_new_dead = None if new_no_dead else str(new_dead_val)
-                            supabase.table("tasks").update({"title": new_title, "difficulty": new_diff, "std_time": new_stdt, "quality": new_qual, "status": new_status, "deadline": final_new_dead}).eq("id", int(sel_id)).execute()
+                            supabase.table("tasks").update({
+                                "title": new_title, "description": new_desc,
+                                "difficulty": new_diff, "std_time": new_stdt, 
+                                "quality": new_qual, "status": new_status, "deadline": final_new_dead
+                            }).eq("id", int(sel_id)).execute()
                             st.rerun()
                         with st.popover("🗑️ 删除任务"):
                             if st.button("确认删除"):
@@ -554,12 +572,16 @@ elif nav == "🏰 个人中心":
                     st.markdown(f"**{r['title']}**")
                     st.caption(f"📅 截止：{format_deadline(r.get('deadline'))}")
                     st.caption(f"⚙️ 难度: {r['difficulty']} | ⏱️ 工时: {r['std_time']}")
+                    
+                    # --- 微调：增加详情查看 ---
+                    with st.expander("👁️ 查看详情"):
+                        st.write(r.get('description', '暂无详情'))
+                        
                     if st.button("✅ 交付验收", key=f"dev_{r['id']}", type="primary"):
                         supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
                         st.success("已提交交付"); st.rerun()
         else: st.info("暂无任务，前往大厅看看吧。")
         
-        # 任务历史 (V25)
         show_task_history(user, role)
         
         st.divider()
