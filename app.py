@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V24.0",
+    page_title="颜祖美学·执行中枢 V24.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -58,7 +58,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v24_stats_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v24_1_fix_dead")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -110,7 +110,7 @@ def calculate_net_yvp(username, days_lookback=None):
     
     gross = my_done['val'].sum()
 
-    # 罚款逻辑 (总榜和30天榜建议扣除罚款，7天榜看爆发力可不扣，这里统一逻辑：days_lookback为None时扣全量，有时间段时扣该时间段的)
+    # 罚款逻辑
     total_fine = 0.0
     
     penalties = run_query("penalties")
@@ -119,16 +119,12 @@ def calculate_net_yvp(username, days_lookback=None):
         if not my_pens.empty:
             my_pens['occurred_at'] = pd.to_datetime(my_pens['occurred_at'])
             
-            # 如果有时间限制，只计算该时间段内的罚款
             if days_lookback:
                 cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                 my_pens = my_pens[my_pens['occurred_at'] >= cutoff]
 
             for _, pen in my_pens.iterrows():
-                # 规则：扣除惩罚日之前7天内产出的20%
                 w_start = pen['occurred_at'] - pd.Timedelta(days=7)
-                # 寻找受罚窗口期的任务（注意：这些任务可能在统计周期外，但它们是罚款基数）
-                # 这里为了逻辑闭环，我们重新全量取任务来计算罚款基数
                 base_tasks = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
                 base_tasks['val'] = base_tasks['difficulty'] * base_tasks['std_time'] * base_tasks['quality']
                 base_tasks['completed_at'] = pd.to_datetime(base_tasks['completed_at'])
@@ -148,12 +144,10 @@ def calculate_period_stats(start_date, end_date):
     tasks = run_query("tasks")
     pens = run_query("penalties")
     
-    # 转为 Timestamp 以便比较
     ts_start = pd.Timestamp(start_date)
-    ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1) # 包含结束当天的最后一秒
+    ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
     for m in members:
-        # 1. 计算该段时间内的毛收入
         gross = 0.0
         if not tasks.empty:
             m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
@@ -162,7 +156,6 @@ def calculate_period_stats(start_date, end_date):
                 in_range = m_tasks[(m_tasks['completed_at'] >= ts_start) & (m_tasks['completed_at'] <= ts_end)]
                 gross = (in_range['difficulty'] * in_range['std_time'] * in_range['quality']).sum()
         
-        # 2. 计算该段时间内的罚款
         fine = 0.0
         pen_count = 0
         if not pens.empty:
@@ -173,9 +166,7 @@ def calculate_period_stats(start_date, end_date):
                 pen_count = len(in_range_pens)
                 
                 for _, p in in_range_pens.iterrows():
-                    # 罚款逻辑：罚款日往前推7天
                     w_start = p['occurred_at'] - pd.Timedelta(days=7)
-                    # 全量任务中找窗口期
                     all_m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
                     if not all_m_tasks.empty:
                         all_m_tasks['completed_at'] = pd.to_datetime(all_m_tasks['completed_at'])
@@ -317,7 +308,6 @@ if nav == "📋 任务大厅":
         st.subheader("🔭 实时动态 (最近35条)")
         active = tdf[tdf['status'].isin(['进行中', '返工', '待验收'])]
         if not active.empty:
-            # 修改点：只保留最近35条
             active_display = active.sort_values("created_at", ascending=False).head(35).copy()
             active_display['Deadline'] = active_display['deadline'].apply(format_deadline)
             st.dataframe(active_display[['title', 'assignee', 'status', 'Deadline']], use_container_width=True, hide_index=True)
@@ -325,7 +315,6 @@ if nav == "📋 任务大厅":
         st.subheader("📜 荣誉记录 (最近35条)")
         done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
         if not done.empty:
-            # 修改点：明确显示 Q (质量系数)
             done['P'] = done.apply(lambda x: f"D{x['difficulty']} / T{x['std_time']} / Q{x['quality']}", axis=1)
             st.dataframe(done[['title', 'assignee', 'P']], use_container_width=True, hide_index=True)
 
@@ -352,7 +341,6 @@ elif nav == "🏆 风云榜":
             data = [{"成员": m, "YVP": calculate_net_yvp(m, days)} for m in members]
             return pd.DataFrame(data).sort_values("YVP", ascending=False)
         
-        # 修改点：新增 30天 排行榜
         t1, t2, t3 = st.tabs(["📅 过去7天", "🗓️ 过去30天", "🔥 历史总榜"])
         with t1: st.dataframe(get_lb(7), use_container_width=True, hide_index=True)
         with t2: st.dataframe(get_lb(30), use_container_width=True, hide_index=True)
@@ -364,7 +352,6 @@ elif nav == "🏰 个人中心":
         if datetime.date.today().day % 10 == 0:
             st.warning(f"📅 **今日为备份提醒日，请下载全量备份。**")
             
-        # 修改点：新增 分润统计 Tab
         tabs = st.tabs(["⚡️ 随手记", "💰 分润统计", "🚀 发布任务", "🛠️ 全量管理", "⚖️ 裁决审核", "📢 公告维护", "👥 成员管理", "💾 备份恢复"])
         
         with tabs[0]:
@@ -374,7 +361,7 @@ elif nav == "🏰 个人中心":
                 supabase.table("tasks").insert({"title": quick_t, "difficulty": 0, "std_time": 0, "status": "进行中", "assignee": user, "type": "AdminSelf"}).execute()
                 st.success("已添加")
 
-        with tabs[1]: # 新功能：分润统计
+        with tabs[1]: 
             st.subheader("💰 周期分润统计")
             st.info("选择时间段，系统将计算该区间内的产出，并自动扣除区间内产生的罚款。")
             c_d1, c_d2 = st.columns(2)
@@ -386,8 +373,6 @@ elif nav == "🏰 个人中心":
                     report = calculate_period_stats(d_start, d_end)
                     st.write(f"**统计区间**: {d_start} 至 {d_end}")
                     st.dataframe(report, use_container_width=True, hide_index=True)
-                    
-                    # 导出功能
                     csv = report.to_csv(index=False).encode('utf-8')
                     st.download_button("📥 下载统计报表", csv, f"yvp_report_{d_start}_{d_end}.csv", "text/csv")
                 else:
@@ -429,9 +414,27 @@ elif nav == "🏰 个人中心":
                         new_stdt = st.number_input("修改工时", value=float(target['std_time']))
                         new_qual = st.number_input("修改质量", value=float(target['quality']))
                         new_status = st.selectbox("修改状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(target['status']))
+                        
+                        # --- 修改点：增加截止日期编辑 ---
+                        c_dead_1, c_dead_2 = st.columns([3, 2])
+                        curr_d = target.get('deadline')
+                        is_null_d = pd.isna(curr_d) or str(curr_d) in ['None', 'NaT', '']
+                        
+                        new_no_dead = c_dead_2.checkbox("无截止日期", value=is_null_d, key=f"dead_chk_{sel_id}")
+                        default_d = datetime.date.today()
+                        if not is_null_d:
+                            default_d = curr_d
+                            
+                        new_dead_val = c_dead_1.date_input("修改截止日期", value=default_d, disabled=new_no_dead, key=f"dead_inp_{sel_id}")
+                        
                         if st.button("💾 确认保存修改"):
-                            supabase.table("tasks").update({"title": new_title, "difficulty": new_diff, "std_time": new_stdt, "quality": new_qual, "status": new_status}).eq("id", int(sel_id)).execute()
+                            final_new_dead = None if new_no_dead else str(new_dead_val)
+                            supabase.table("tasks").update({
+                                "title": new_title, "difficulty": new_diff, "std_time": new_stdt, 
+                                "quality": new_qual, "status": new_status, "deadline": final_new_dead
+                            }).eq("id", int(sel_id)).execute()
                             st.rerun()
+                            
                         with st.popover("🗑️ 删除任务"):
                             if st.button("确认删除"):
                                 supabase.table("tasks").delete().eq("id", int(sel_id)).execute(); st.rerun()
