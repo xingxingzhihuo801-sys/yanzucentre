@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V23.0",
+    page_title="颜祖美学·执行中枢 V24.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -57,9 +57,8 @@ except Exception:
     st.error("🚨 数据库连接配置有误，请检查 Secrets。")
     st.stop()
 
-# --- 3. Cookie 管理器 (修复重点：移除缓存装饰器) ---
-# 必须直接初始化，不能放在 @st.cache_resource 函数里
-cookie_manager = stx.CookieManager(key="yanzu_v23_fix_cookie_mgr")
+# --- 3. Cookie 管理器 ---
+cookie_manager = stx.CookieManager(key="yanzu_v24_stats_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -96,31 +95,105 @@ def calculate_net_yvp(username, days_lookback=None):
 
     tasks = run_query("tasks")
     if tasks.empty: return 0.0
+    
+    # 筛选已完成
     my_done = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
     if my_done.empty: return 0.0
     
     my_done['val'] = my_done['difficulty'] * my_done['std_time'] * my_done['quality']
     my_done['completed_at'] = pd.to_datetime(my_done['completed_at'])
     
+    # 时间筛选
     if days_lookback:
         cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
         my_done = my_done[my_done['completed_at'] >= cutoff]
     
     gross = my_done['val'].sum()
 
-    # 罚款逻辑
+    # 罚款逻辑 (总榜和30天榜建议扣除罚款，7天榜看爆发力可不扣，这里统一逻辑：days_lookback为None时扣全量，有时间段时扣该时间段的)
     total_fine = 0.0
-    if days_lookback is None: 
-        penalties = run_query("penalties")
-        if not penalties.empty:
-            my_pens = penalties[penalties['username'] == username].copy()
-            if not my_pens.empty:
-                my_pens['occurred_at'] = pd.to_datetime(my_pens['occurred_at'])
-                for _, pen in my_pens.iterrows():
-                    w_start = pen['occurred_at'] - pd.Timedelta(days=7)
-                    w_tasks = my_done[(my_done['completed_at'] >= w_start) & (my_done['completed_at'] <= pen['occurred_at'])]
-                    total_fine += w_tasks['val'].sum() * 0.2
+    
+    penalties = run_query("penalties")
+    if not penalties.empty:
+        my_pens = penalties[penalties['username'] == username].copy()
+        if not my_pens.empty:
+            my_pens['occurred_at'] = pd.to_datetime(my_pens['occurred_at'])
+            
+            # 如果有时间限制，只计算该时间段内的罚款
+            if days_lookback:
+                cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
+                my_pens = my_pens[my_pens['occurred_at'] >= cutoff]
+
+            for _, pen in my_pens.iterrows():
+                # 规则：扣除惩罚日之前7天内产出的20%
+                w_start = pen['occurred_at'] - pd.Timedelta(days=7)
+                # 寻找受罚窗口期的任务（注意：这些任务可能在统计周期外，但它们是罚款基数）
+                # 这里为了逻辑闭环，我们重新全量取任务来计算罚款基数
+                base_tasks = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
+                base_tasks['val'] = base_tasks['difficulty'] * base_tasks['std_time'] * base_tasks['quality']
+                base_tasks['completed_at'] = pd.to_datetime(base_tasks['completed_at'])
+                
+                w_tasks = base_tasks[(base_tasks['completed_at'] >= w_start) & (base_tasks['completed_at'] <= pen['occurred_at'])]
+                total_fine += w_tasks['val'].sum() * 0.2
+
     return round(gross - total_fine, 2)
+
+def calculate_period_stats(start_date, end_date):
+    """管理员专用：计算指定时间段的分润统计"""
+    users = run_query("users")
+    members = users[users['role'] != 'admin']['username'].tolist()
+    
+    stats_data = []
+    
+    tasks = run_query("tasks")
+    pens = run_query("penalties")
+    
+    # 转为 Timestamp 以便比较
+    ts_start = pd.Timestamp(start_date)
+    ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1) # 包含结束当天的最后一秒
+
+    for m in members:
+        # 1. 计算该段时间内的毛收入
+        gross = 0.0
+        if not tasks.empty:
+            m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
+            if not m_tasks.empty:
+                m_tasks['completed_at'] = pd.to_datetime(m_tasks['completed_at'])
+                in_range = m_tasks[(m_tasks['completed_at'] >= ts_start) & (m_tasks['completed_at'] <= ts_end)]
+                gross = (in_range['difficulty'] * in_range['std_time'] * in_range['quality']).sum()
+        
+        # 2. 计算该段时间内的罚款
+        fine = 0.0
+        pen_count = 0
+        if not pens.empty:
+            m_pens = pens[(pens['username'] == m)].copy()
+            if not m_pens.empty:
+                m_pens['occurred_at'] = pd.to_datetime(m_pens['occurred_at'])
+                in_range_pens = m_pens[(m_pens['occurred_at'] >= ts_start) & (m_pens['occurred_at'] <= ts_end)]
+                pen_count = len(in_range_pens)
+                
+                for _, p in in_range_pens.iterrows():
+                    # 罚款逻辑：罚款日往前推7天
+                    w_start = p['occurred_at'] - pd.Timedelta(days=7)
+                    # 全量任务中找窗口期
+                    all_m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
+                    if not all_m_tasks.empty:
+                        all_m_tasks['completed_at'] = pd.to_datetime(all_m_tasks['completed_at'])
+                        all_m_tasks['val'] = all_m_tasks['difficulty'] * all_m_tasks['std_time'] * all_m_tasks['quality']
+                        
+                        w_tasks = all_m_tasks[(all_m_tasks['completed_at'] >= w_start) & (all_m_tasks['completed_at'] <= p['occurred_at'])]
+                        fine += w_tasks['val'].sum() * 0.2
+
+        net = gross - fine
+        stats_data.append({
+            "成员": m,
+            "区间产出": round(gross, 2),
+            "区间罚款": round(fine, 2),
+            "罚单数": pen_count,
+            "💰 应发YVP": round(net, 2)
+        })
+        
+    return pd.DataFrame(stats_data).sort_values("💰 应发YVP", ascending=False)
 
 def format_deadline(d_val):
     if pd.isna(d_val) or str(d_val) in ['NaT', 'None', '']: return "♾️ 无期限"
@@ -134,9 +207,8 @@ if 'user' not in st.session_state:
     st.session_state.user = None
     st.session_state.role = None
 
-# Cookie 自动登录尝试
 if st.session_state.user is None:
-    time.sleep(0.5) # 给组件一点加载时间
+    time.sleep(0.5)
     c_user = cookie_manager.get("yanzu_user")
     c_role = cookie_manager.get("yanzu_role")
     if c_user and c_role:
@@ -144,7 +216,6 @@ if st.session_state.user is None:
         st.session_state.role = c_role
         st.rerun()
 
-# 登录页
 if st.session_state.user is None:
     st.title("🏛️ 颜祖美学·执行中枢")
     st.info(f"🔥 {random.choice(QUOTES)}")
@@ -157,11 +228,10 @@ if st.session_state.user is None:
             if st.form_submit_button("进入系统", type="primary"):
                 res = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
                 if res.data:
-                    role = res.data[0]['role']
                     st.session_state.user = u
-                    st.session_state.role = role
+                    st.session_state.role = res.data[0]['role']
                     cookie_manager.set("yanzu_user", u, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
-                    cookie_manager.set("yanzu_role", role, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
+                    cookie_manager.set("yanzu_role", st.session_state.role, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
                     st.success("验证成功")
                     time.sleep(0.5)
                     st.rerun()
@@ -195,12 +265,13 @@ with st.sidebar:
     st.caption("👑 管理员" if role == 'admin' else "⚔️ 成员")
     if role != 'admin':
         yvp_7 = calculate_net_yvp(user, 7)
+        yvp_30 = calculate_net_yvp(user, 30)
         yvp_all = calculate_net_yvp(user)
-        st.metric("本周产出", yvp_7)
+        st.metric("7天净收益", yvp_7)
+        st.metric("30天净收益", yvp_30)
         st.metric("总净资产", yvp_all)
     st.divider()
     if st.button("注销并退出"):
-        # 清除 Cookie 并刷新
         cookie_manager.set("yanzu_user", "", expires_at=datetime.datetime.now() - datetime.timedelta(days=1))
         cookie_manager.set("yanzu_role", "", expires_at=datetime.datetime.now() - datetime.timedelta(days=1))
         st.session_state.user = None
@@ -225,56 +296,49 @@ if nav == "📋 任务大厅":
                         st.markdown(f"**{row['title']}**")
                         st.caption(f"📅 截止: {format_deadline(row.get('deadline'))}")
                         st.markdown(f"D:{row['difficulty']} | T:{row['std_time']}")
-                        
                         if st.button("⚡️ 抢单", key=f"g_{row['id']}", type="primary"):
-                            # --- Feature 2: 抢单限制检查 ---
+                            # 抢单限制逻辑
                             can_grab = True
                             if role != 'admin':
-                                # 检查该用户当前手里有多少个“进行中”的“公共任务”
-                                my_ongoing_public = tdf[
-                                    (tdf['assignee'] == user) & 
-                                    (tdf['status'] == '进行中') & 
-                                    (tdf['type'] == '公共任务池')
-                                ]
-                                if len(my_ongoing_public) >= 2:
-                                    can_grab = False
+                                my_ongoing_public = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中') & (tdf['type'] == '公共任务池')]
+                                if len(my_ongoing_public) >= 2: can_grab = False
                             
                             if can_grab:
                                 supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(row['id'])).execute()
-                                st.toast("🚀 任务已领取，加油！", icon="🔥")
-                                time.sleep(0.5)
-                                st.rerun()
+                                st.toast("任务已领取！", icon="🚀")
+                                time.sleep(0.5); st.rerun()
                             else:
-                                st.warning("✋ 贪多嚼不烂！您已有 2 个公共任务正在进行中，请先交付验收后再来抢单。")
-                                
+                                st.warning("✋ 贪多嚼不烂！您已有 2 个公共任务正在进行中。")
         else: st.info("目前池中无任务")
 
     st.divider()
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("🔭 实时动态")
+        st.subheader("🔭 实时动态 (最近35条)")
         active = tdf[tdf['status'].isin(['进行中', '返工', '待验收'])]
         if not active.empty:
-            active_display = active.copy()
+            # 修改点：只保留最近35条
+            active_display = active.sort_values("created_at", ascending=False).head(35).copy()
             active_display['Deadline'] = active_display['deadline'].apply(format_deadline)
             st.dataframe(active_display[['title', 'assignee', 'status', 'Deadline']], use_container_width=True, hide_index=True)
     with c2:
-        st.subheader("📜 荣誉记录")
-        done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(10)
+        st.subheader("📜 荣誉记录 (最近35条)")
+        done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
         if not done.empty:
-            done['P'] = done.apply(lambda x: f"D{x['difficulty']}/T{x['std_time']}/Q{x['quality']}", axis=1)
+            # 修改点：明确显示 Q (质量系数)
+            done['P'] = done.apply(lambda x: f"D{x['difficulty']} / T{x['std_time']} / Q{x['quality']}", axis=1)
             st.dataframe(done[['title', 'assignee', 'P']], use_container_width=True, hide_index=True)
 
 elif nav == "🗣️ 颜祖广场":
     st.header("🗣️ 颜祖广场")
-    with st.expander("✍️ 发布寄语/感想"):
+    with st.expander("✍️ 发布寄语"):
         txt = st.text_area("输入内容")
-        if st.button("确认发布"):
+        if st.button("发布"):
             supabase.table("messages").insert({"username": user, "content": txt, "created_at": str(datetime.datetime.now())}).execute()
             st.rerun()
     msgs = run_query("messages")
     if not msgs.empty:
-        msgs = msgs[msgs['username'] != '__NOTICE__'].sort_values("created_at", ascending=False)
+        msgs = msgs[msgs['username'] != '__NOTICE__'].sort_values("created_at", ascending=False).head(50)
         for i, m in msgs.iterrows():
             with st.chat_message("user", avatar="💬"):
                 st.write(f"**{m['username']}**: {m['content']}")
@@ -287,18 +351,21 @@ elif nav == "🏆 风云榜":
         def get_lb(days):
             data = [{"成员": m, "YVP": calculate_net_yvp(m, days)} for m in members]
             return pd.DataFrame(data).sort_values("YVP", ascending=False)
-        t1, t2 = st.tabs(["📅 7天榜", "🔥 总资产榜"])
+        
+        # 修改点：新增 30天 排行榜
+        t1, t2, t3 = st.tabs(["📅 过去7天", "🗓️ 过去30天", "🔥 历史总榜"])
         with t1: st.dataframe(get_lb(7), use_container_width=True, hide_index=True)
-        with t2: st.dataframe(get_lb(None), use_container_width=True, hide_index=True)
+        with t2: st.dataframe(get_lb(30), use_container_width=True, hide_index=True)
+        with t3: st.dataframe(get_lb(None), use_container_width=True, hide_index=True)
 
 elif nav == "🏰 个人中心":
     if role == 'admin':
         st.header("👑 统帅后台")
-        # 10天备份提醒
         if datetime.date.today().day % 10 == 0:
-            st.warning(f"📅 **今日为备份提醒日 ({datetime.date.today().day}号)，请下载全量备份。**")
+            st.warning(f"📅 **今日为备份提醒日，请下载全量备份。**")
             
-        tabs = st.tabs(["⚡️ 随手记", "🚀 发布任务", "🛠️ 全量管理", "⚖️ 裁决审核", "📢 公告维护", "👥 成员管理", "💾 备份恢复"])
+        # 修改点：新增 分润统计 Tab
+        tabs = st.tabs(["⚡️ 随手记", "💰 分润统计", "🚀 发布任务", "🛠️ 全量管理", "⚖️ 裁决审核", "📢 公告维护", "👥 成员管理", "💾 备份恢复"])
         
         with tabs[0]:
             st.info("直接派发给自己的任务，不计分，完成后点击‘归档’。")
@@ -306,8 +373,27 @@ elif nav == "🏰 个人中心":
             if st.button("⚡️ 派发给我", type="primary"):
                 supabase.table("tasks").insert({"title": quick_t, "difficulty": 0, "std_time": 0, "status": "进行中", "assignee": user, "type": "AdminSelf"}).execute()
                 st.success("已添加")
+
+        with tabs[1]: # 新功能：分润统计
+            st.subheader("💰 周期分润统计")
+            st.info("选择时间段，系统将计算该区间内的产出，并自动扣除区间内产生的罚款。")
+            c_d1, c_d2 = st.columns(2)
+            d_start = c_d1.date_input("开始日期", value=datetime.date.today().replace(day=1))
+            d_end = c_d2.date_input("结束日期", value=datetime.date.today())
+            
+            if st.button("📊 开始统计", type="primary"):
+                if d_start <= d_end:
+                    report = calculate_period_stats(d_start, d_end)
+                    st.write(f"**统计区间**: {d_start} 至 {d_end}")
+                    st.dataframe(report, use_container_width=True, hide_index=True)
+                    
+                    # 导出功能
+                    csv = report.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 下载统计报表", csv, f"yvp_report_{d_start}_{d_end}.csv", "text/csv")
+                else:
+                    st.error("结束日期必须晚于开始日期")
         
-        with tabs[1]:
+        with tabs[2]:
             c1, c2 = st.columns(2)
             t_name = c1.text_input("任务名称")
             col_d, col_c = c1.columns([3,2])
@@ -324,7 +410,7 @@ elif nav == "🏰 个人中心":
                 supabase.table("tasks").insert({"title": t_name, "difficulty": diff, "std_time": stdt, "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign if ttype=="指派成员" else "待定", "deadline": final_d, "type": ttype}).execute()
                 st.success("已发布")
 
-        with tabs[2]:
+        with tabs[3]:
             st.subheader("🛠️ 全量数据修正")
             tdf = run_query("tasks"); udf = run_query("users")
             if not tdf.empty:
@@ -350,7 +436,7 @@ elif nav == "🏰 个人中心":
                             if st.button("确认删除"):
                                 supabase.table("tasks").delete().eq("id", int(sel_id)).execute(); st.rerun()
 
-        with tabs[3]:
+        with tabs[4]:
             pend = run_query("tasks")
             pend = pend[pend['status'] == '待验收']
             if not pend.empty:
@@ -365,15 +451,13 @@ elif nav == "🏰 个人中心":
                         st.success("已完成裁决"); st.rerun()
             else: st.info("暂无待审任务")
 
-        with tabs[4]:
+        with tabs[5]:
             st.subheader("📢 公告维护")
             new_ann = st.text_input("输入新公告内容", placeholder=ann_text)
             if st.button("立即发布公告"):
-                supabase.table("messages").delete().eq("username", "__NOTICE__").execute()
-                supabase.table("messages").insert({"username": "__NOTICE__", "content": new_ann, "created_at": str(datetime.datetime.now())}).execute()
-                st.success("公告已更新")
+                update_announcement(new_ann); st.success("公告已更新")
 
-        with tabs[5]:
+        with tabs[6]:
             udf = run_query("users")
             st.subheader("👥 成员名录")
             for i, m in udf[udf['role']!='admin'].iterrows():
@@ -387,7 +471,7 @@ elif nav == "🏰 个人中心":
                         if st.button("确认注销该成员", key=f"del_{m['username']}"):
                             supabase.table("users").delete().eq("username", m['username']).execute(); st.rerun()
 
-        with tabs[6]:
+        with tabs[7]:
             st.subheader("💾 备份与恢复")
             d1=run_query("users"); d2=run_query("tasks"); d3=run_query("penalties"); d4=run_query("messages")
             buf = io.StringIO()
