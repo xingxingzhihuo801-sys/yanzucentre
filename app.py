@@ -1,393 +1,301 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import datetime
 import random
 import time
-import io
+from supabase import create_client, Client
 
-# --- 1. 系统配置 ---
-st.set_page_config(page_title="颜祖美学·执行中枢 V11.0", layout="wide")
+# --- 系统配置 ---
+st.set_page_config(page_title="颜祖美学·执行中枢 V12.0 (云端永恒版)", layout="wide")
 
-# --- 2. 数据库连接与自动修复 ---
-# 使用新文件名以避免旧缓存干扰，或者沿用旧名但加强修复逻辑
-DB_NAME = "yanzu_core_v11.db"
-conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+# --- 1. 连接 Supabase 云端数据库 ---
+try:
+    url = st.secrets["supabase"]["url"]
+    key = st.secrets["supabase"]["key"]
+    supabase: Client = create_client(url, key)
+except Exception as e:
+    st.error("🚨 数据库连接失败！请检查 Streamlit 的 Secrets 配置是否正确。")
+    st.info(f"错误信息: {e}")
+    st.stop()
 
-def init_and_repair_db():
-    c = conn.cursor()
+# --- 2. 核心工具函数 (针对 Supabase 优化) ---
+def run_query(table_name):
+    """获取整张表的数据，返回 DataFrame"""
+    try:
+        response = supabase.table(table_name).select("*").execute()
+        return pd.DataFrame(response.data)
+    except Exception as e:
+        st.error(f"读取 {table_name} 失败: {e}")
+        return pd.DataFrame()
+
+def get_gold_stats(username, days=None):
+    """计算净金币 (YVP)"""
+    # 1. 获取所有完成的任务
+    tasks = run_query("tasks")
+    if tasks.empty:
+        return 0.0, 0
+
+    # 筛选：当前用户 + 已完成
+    user_tasks = tasks[ (tasks['assignee'] == username) & (tasks['status'] == '完成') ]
     
-    # A. 建基础表 (如果完全是新的)
-    c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS tasks 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  title TEXT, 
-                  description TEXT, 
-                  difficulty REAL, 
-                  std_time REAL, 
-                  quality REAL DEFAULT 1.0, 
-                  status TEXT, 
-                  assignee TEXT, 
-                  deadline DATE, 
-                  completed_at DATE, 
-                  feedback TEXT,
-                  type TEXT)''')
-                  
-    c.execute('''CREATE TABLE IF NOT EXISTS penalties 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  username TEXT, 
-                  occurred_at DATE, 
-                  reason TEXT)''')
-    
-    # B. 自动修复机制 (关键：补全旧表缺失的列)
-    # 针对每一个可能缺失的列，尝试执行 ALTER TABLE
-    columns_to_check = [
-        ("tasks", "description", "TEXT"),
-        ("tasks", "deadline", "DATE"),
-        ("tasks", "type", "TEXT"),
-        ("tasks", "feedback", "TEXT"),
-        ("tasks", "completed_at", "DATE")
-    ]
-    
-    for table, col, dtype in columns_to_check:
-        try:
-            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {dtype}")
-            # print(f"修复成功：已添加 {col} 列") 
-        except sqlite3.OperationalError:
-            pass # 列已存在，忽略错误
+    # 筛选：时间范围 (如果有)
+    if days and not user_tasks.empty:
+        # 将字符串转为日期进行比较
+        cutoff = datetime.date.today() - datetime.timedelta(days=days)
+        # 确保 completed_at 是日期类型
+        user_tasks['completed_at'] = pd.to_datetime(user_tasks['completed_at']).dt.date
+        user_tasks = user_tasks[user_tasks['completed_at'] >= cutoff]
 
-    # C. 预设管理员 (防止被锁在门外)
-    c.execute("INSERT OR IGNORE INTO users VALUES ('liujingting', 'admin888', 'admin')")
-    c.execute("INSERT OR IGNORE INTO users VALUES ('jiangjing', 'strategy999', 'admin')")
-    conn.commit()
+    gross = 0.0
+    if not user_tasks.empty:
+        gross = (user_tasks['difficulty'] * user_tasks['std_time'] * user_tasks['quality']).sum()
+    
+    # 2. 获取惩罚
+    pens = run_query("penalties")
+    pen_cnt = 0
+    if not pens.empty:
+        pen_cnt = len(pens[pens['username'] == username])
+        # 注意：这里简化逻辑，惩罚是累计的，一旦背了惩罚，所有时期的收益都受影响（作为严厉的威慑）
+    
+    net = gross * (1 - min(pen_cnt * 0.2, 1.0))
+    return round(net, 2), pen_cnt
 
-# 执行初始化
-init_and_repair_db()
-
-# --- 3. 励志语录库 ---
+# --- 3. 励志语录 ---
 QUOTES = [
     "痛苦是成长的属性。不要因为痛苦而逃避，要因为痛苦而兴奋。",
     "管理者的跃升，是从'对任务负责'到'对目标负责'。",
     "不要假装努力，结果不会陪你演戏。",
-    "你的对手在看书，你的仇人在磨刀，隔壁老王在练腰。",
-    "悲观者正确，乐观者成功。",
-    "用系统工作的效率，对抗个体努力的瓶颈。",
-    "不做烂好人，要做'手起刀落'的管理者。"
+    "用系统工作的效率，对抗个体努力的瓶颈。"
 ]
 
-# --- 4. 核心逻辑函数 ---
-
-def get_gold_stats(username, days=None):
-    """计算净金币 (YVP) = 总收入 * (1 - 惩罚系数)"""
-    date_filter = ""
-    if days:
-        start_date = datetime.date.today() - datetime.timedelta(days=days)
-        date_filter = f" AND completed_at >= '{start_date}'"
-    
-    # 1. 查任务收入
-    sql = f"SELECT difficulty, std_time, quality FROM tasks WHERE assignee='{username}' AND status='完成' {date_filter}"
-    df = pd.read_sql(sql, conn)
-    gross = 0.0
-    if not df.empty:
-        gross = (df['difficulty'] * df['std_time'] * df['quality']).sum()
-    
-    # 2. 查惩罚次数 (累计)
-    pen_sql = f"SELECT COUNT(*) as cnt FROM penalties WHERE username='{username}'"
-    pen_cnt = pd.read_sql(pen_sql, conn).iloc[0]['cnt']
-    
-    # 3. 计算净值 (每次惩罚扣20%)
-    net = gross * (1 - min(pen_cnt * 0.2, 1.0))
-    return round(net, 2), pen_cnt
-
-# --- 5. 登录与注册界面 ---
+# --- 4. 登录界面 ---
 if 'user' not in st.session_state:
-    st.title("🏛️ 颜祖美学·数字化军营")
+    st.title("🏛️ 颜祖美学·云端执行中枢")
+    st.caption("Data Secured by Supabase™")
     st.info(f"🔥 {random.choice(QUOTES)}")
     
-    tab_login, tab_reg = st.tabs(["🔑 登录", "📝 新兵注册"])
-    
-    with tab_login:
-        with st.form("login_form"):
+    col1, col2 = st.columns(2)
+    with col1:
+        with st.form("login"):
             u = st.text_input("用户名")
             p = st.text_input("密码", type="password")
-            if st.form_submit_button("进入中枢"):
-                ud = pd.read_sql(f"SELECT * FROM users WHERE username='{u}' AND password='{p}'", conn)
-                if not ud.empty:
-                    st.session_state.user = u
-                    st.session_state.role = ud.iloc[0]['role']
-                    st.rerun()
-                else:
-                    st.error("鉴权失败：账号或密码错误")
-    
-    with tab_reg:
-        with st.form("reg_form"):
+            if st.form_submit_button("🚀 进入系统"):
+                # Supabase 查询
+                try:
+                    response = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
+                    if response.data:
+                        st.session_state.user = u
+                        st.session_state.role = response.data[0]['role']
+                        st.toast("鉴权通过，正在进入...", icon="✅")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error("鉴权失败")
+                except Exception as e:
+                    st.error(f"登录连接错误: {e}")
+
+    with col2:
+        with st.expander("📝 新兵注册通道"):
             nu = st.text_input("设置用户名")
             np = st.text_input("设置密码", type="password")
-            if st.form_submit_button("注册账号"):
-                if nu and np:
-                    try:
-                        conn.execute("INSERT INTO users VALUES (?, ?, 'member')", (nu, np))
-                        conn.commit()
-                        st.success("注册成功！请切换到登录页登录。")
-                    except sqlite3.IntegrityError:
-                        st.warning("该用户名已被占用。")
-                else:
-                    st.warning("用户名和密码不能为空。")
+            if st.button("提交注册申请"):
+                try:
+                    supabase.table("users").insert({"username": nu, "password": np, "role": "member"}).execute()
+                    st.success("注册成功！请左侧登录。")
+                except:
+                    st.warning("该用户名已被注册。")
     st.stop()
 
-# --- 6. 主程序 ---
+# --- 5. 主程序 ---
 user = st.session_state.user
 role = st.session_state.role
 
-# 侧边栏：个人中心
+# 侧边栏
 st.sidebar.title(f"👤 {user}")
 if role == 'admin':
-    st.sidebar.info("👑 最高指挥官")
-    st.sidebar.caption("不参与金币结算")
+    st.sidebar.caption("👑 最高指挥官")
 else:
-    st.sidebar.info("⚔️ 核心成员")
+    st.sidebar.caption("⚔️ 核心成员")
     net, pen = get_gold_stats(user)
-    st.sidebar.metric("💰 净金币 (YVP)", net, delta=f"被罚 {pen} 次 (-{int(pen*20)}%)", delta_color="inverse")
-    
-    # 历史战绩微缩图
-    g7, _ = get_gold_stats(user, 7)
-    g30, _ = get_gold_stats(user, 30)
-    st.sidebar.text(f"7天收益: {g7}")
-    st.sidebar.text(f"30天收益: {g30}")
+    st.sidebar.metric("💰 净金币 (YVP)", net, delta=f"被罚 {pen} 次", delta_color="inverse")
 
-st.sidebar.divider()
-if st.sidebar.button("安全注销"):
+if st.sidebar.button("注销"):
     del st.session_state.user
     st.rerun()
 
-# 导航菜单 (阶级隔离)
+# 导航
 if role == 'admin':
-    menu = ["👑 核心控制台", "📋 任务大厅", "🏆 颜祖风云榜"]
+    menu = ["👑 核心控制台", "📋 任务大厅", "🏆 风云榜"]
 else:
-    menu = ["📋 任务大厅", "👤 我的任务", "🏆 颜祖风云榜"]
-
+    menu = ["📋 任务大厅", "👤 我的任务", "🏆 风云榜"]
 choice = st.sidebar.radio("导航", menu)
 
 # ================= 👑 管理员控制台 =================
 if choice == "👑 核心控制台" and role == 'admin':
-    st.header("👑 最高统帅部")
-    tabs = st.tabs(["🚀 发布指令", "⚖️ 裁决评分", "🚨 军法考勤", "👥 人员管理", "💾 备份恢复"])
+    st.header("👑 最高统帅部 (云端版)")
+    t1, t2, t3, t4 = st.tabs(["发布指令", "裁决评分", "军法考勤", "人员管理"])
     
-    # 1. 发布
-    with tabs[0]:
+    with t1: # 发布
         c1, c2 = st.columns(2)
         with c1:
             title = st.text_input("任务名称")
-            desc = st.text_area("详细说明 (DoD标准)")
+            desc = st.text_area("详细说明")
             deadline = st.date_input("截止日期")
         with c2:
-            d = st.number_input("难度系数 (D_factor)", 1.0, step=0.1)
-            t = st.number_input("标准工时 (T_std)", 1.0, step=0.5)
-            ttype = st.radio("任务类型", ["公共任务池", "指定指派"])
-            
+            d = st.number_input("难度系数 (D)", 1.0, step=0.1)
+            t = st.number_input("标准工时 (T)", 1.0, step=0.5)
+            ttype = st.radio("类型", ["公共任务池", "指定指派"])
             assignee = "待定"
             if ttype == "指定指派":
-                usrs = pd.read_sql("SELECT username FROM users WHERE role='member'", conn)
-                if not usrs.empty:
-                    assignee = st.selectbox("指派给", usrs['username'].tolist())
+                udf = run_query("users")
+                if not udf.empty:
+                    mems = udf[udf['role']!='admin']['username'].tolist()
+                    assignee = st.selectbox("指派给", mems)
         
-        if st.button("立即发布"):
-            # 完整字段插入
+        if st.button("🚀 写入云端数据库"):
             status = "待领取" if ttype == "公共任务池" else "进行中"
             final_a = assignee if ttype == "指定指派" else "待定"
-            
-            try:
-                conn.execute('''INSERT INTO tasks (title, description, difficulty, std_time, status, assignee, deadline, type, feedback) 
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '')''', 
-                             (title, desc, d, t, status, final_a, deadline, ttype))
-                conn.commit()
-                st.success("指令已下达！")
-            except Exception as e:
-                st.error(f"发布失败: {e}")
+            # 写入 Supabase
+            data = {
+                "title": title, "description": desc, "difficulty": d, "std_time": t,
+                "status": status, "assignee": final_a, "deadline": str(deadline),
+                "type": ttype, "feedback": ""
+            }
+            supabase.table("tasks").insert(data).execute()
+            st.success("指令已下达！")
 
-    # 2. 裁决
-    with tabs[1]:
-        # 只看待验收
-        pend = pd.read_sql("SELECT * FROM tasks WHERE status='待验收'", conn)
+    with t2: # 裁决
+        # 只能查到 status='待验收'
+        response = supabase.table("tasks").select("*").eq("status", "待验收").execute()
+        pend = pd.DataFrame(response.data)
+        
         if not pend.empty:
-            tid = st.selectbox("选择待审任务", pend['id'], format_func=lambda x: f"ID {x}")
-            tinfo = pend[pend['id']==tid].iloc[0]
+            tid = st.selectbox("待审任务", pend['id'], format_func=lambda x: f"ID {x}")
+            curr = pend[pend['id']==tid].iloc[0]
+            st.info(f"{curr['title']} | 执行人: {curr['assignee']}")
             
-            st.warning(f"正在裁决: {tinfo['title']}")
-            st.write(f"执行人: {tinfo['assignee']} | 预估金币: {round(tinfo['difficulty']*tinfo['std_time'], 2)}")
-            
-            col_q, col_fb = st.columns([1, 2])
-            with col_q:
-                q = st.slider("质量系数 (Q)", 0.0, 3.0, 1.0, 0.1)
-                res = st.selectbox("裁决结果", ["完成", "返工"])
-            with col_fb:
-                fb = st.text_area("御批 (评分理由)", placeholder="必须填写理由...")
+            q = st.slider("质量系数", 0.0, 3.0, 1.0, 0.1)
+            fb = st.text_area("御批 (理由)", placeholder="必填...")
+            res = st.selectbox("结果", ["完成", "返工"])
             
             if st.button("提交裁决"):
                 if not fb:
-                    st.error("陛下，请填写御批理由！")
+                    st.error("请填写理由")
                 else:
-                    cat = datetime.date.today() if res == '完成' else None
-                    conn.execute("UPDATE tasks SET quality=?, status=?, feedback=?, completed_at=? WHERE id=?", 
-                                 (q, res, fb, cat, tid))
-                    conn.commit()
-                    st.success("裁决已生效！")
+                    comp_at = str(datetime.date.today()) if res == "完成" else None
+                    supabase.table("tasks").update({
+                        "quality": q, "status": res, "feedback": fb, "completed_at": comp_at
+                    }).eq("id", int(tid)).execute()
+                    st.success("裁决已同步至云端")
                     time.sleep(1)
                     st.rerun()
         else:
-            st.info("暂无待验收任务")
+            st.info("无待验收任务")
 
-    # 3. 考勤
-    with tabs[2]:
-        st.error("⚠️ 热炉法则：每次缺勤扣除 20% 总收益")
-        usrs = pd.read_sql("SELECT username FROM users WHERE role='member'", conn)
-        target = st.selectbox("违规人员", usrs['username'].tolist() if not usrs.empty else [])
+    with t3: # 惩罚
+        udf = run_query("users")
+        if not udf.empty:
+            mems = udf[udf['role']!='admin']['username'].tolist()
+            target = st.selectbox("违规人员", mems)
+            if st.button("🚨 记录缺勤"):
+                supabase.table("penalties").insert({
+                    "username": target, "occurred_at": str(datetime.date.today()), "reason": "缺勤"
+                }).execute()
+                st.success(f"{target} 已受罚")
         
-        if st.button("🚨 记录缺勤"):
-            conn.execute("INSERT INTO penalties (username, occurred_at, reason) VALUES (?, ?, '缺勤')", 
-                         (target, datetime.date.today()))
-            conn.commit()
-            st.success(f"已对 {target} 执行惩罚")
-            
-        st.write("---")
-        st.caption("惩罚日志")
-        st.dataframe(pd.read_sql("SELECT * FROM penalties ORDER BY id DESC", conn))
+        st.caption("最近惩罚记录")
+        st.dataframe(run_query("penalties"))
 
-    # 4. 人员
-    with tabs[3]:
-        all_u = pd.read_sql("SELECT * FROM users", conn)
-        for i, r in all_u.iterrows():
-            c1, c2, c3 = st.columns([2, 1, 1])
-            c1.write(f"**{r['username']}**")
-            c2.write(f"角色: {r['role']}")
+    with t4: # 人员
+        udf = run_query("users")
+        for i, r in udf.iterrows():
             if r['role'] != 'admin':
-                if c3.button("驱逐", key=f"del_{r['username']}"):
-                    conn.execute("DELETE FROM users WHERE username=?", (r['username'],))
-                    conn.commit()
+                c1, c2 = st.columns([3, 1])
+                c1.write(f"**{r['username']}**")
+                if c2.button("驱逐", key=r['username']):
+                    supabase.table("users").delete().eq("username", r['username']).execute()
                     st.rerun()
 
-    # 5. 备份与恢复
-    with tabs[4]:
-        st.info("数据冷备份：防止云端重置丢失数据。")
-        
-        # 导出
-        users_csv = pd.read_sql("SELECT * FROM users", conn).to_csv(index=False)
-        tasks_csv = pd.read_sql("SELECT * FROM tasks", conn).to_csv(index=False)
-        pens_csv = pd.read_sql("SELECT * FROM penalties", conn).to_csv(index=False)
-        
-        # 简单打包成文本
-        full_backup = f"===USERS===\n{users_csv}\n===TASKS===\n{tasks_csv}\n===PENALTIES===\n{pens_csv}"
-        
-        st.download_button("📥 下载全量备份.txt", full_backup, f"backup_{datetime.date.today()}.txt")
-        
-        st.write("---")
-        st.write("♻️ 恢复数据 (请上传上面下载的txt)")
-        uf = st.file_uploader("上传备份文件", type=['txt'])
-        if uf:
-            if st.button("⚠️ 确认覆盖并恢复"):
-                try:
-                    content = uf.getvalue().decode("utf-8")
-                    parts = content.split("===")
-                    # parts[0] is empty, parts[1] is USERS tag... wait split results:
-                    # "", "USERS", "\ncsv...", "TASKS", "\ncsv...", "PENALTIES", "\ncsv..."
-                    # split by sections manually safer
-                    
-                    sec_users = content.split("===USERS===\n")[1].split("===TASKS===")[0].strip()
-                    sec_tasks = content.split("===TASKS===\n")[1].split("===PENALTIES===")[0].strip()
-                    sec_pens = content.split("===PENALTIES===\n")[1].strip()
-                    
-                    c = conn.cursor()
-                    c.execute("DELETE FROM users")
-                    c.execute("DELETE FROM tasks")
-                    c.execute("DELETE FROM penalties")
-                    
-                    pd.read_csv(io.StringIO(sec_users)).to_sql('users', conn, if_exists='append', index=False)
-                    pd.read_csv(io.StringIO(sec_tasks)).to_sql('tasks', conn, if_exists='append', index=False)
-                    pd.read_csv(io.StringIO(sec_pens)).to_sql('penalties', conn, if_exists='append', index=False)
-                    
-                    conn.commit()
-                    st.success("数据已成功恢复！")
-                    time.sleep(1)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"恢复失败: {e}")
-
-# ================= 📋 任务大厅 (全员可见) =================
+# ================= 📋 任务大厅 =================
 elif choice == "📋 任务大厅":
     st.header("🛡️ 任务大厅")
     
-    # 1. 待领取任务
-    st.subheader("🔥 待领取任务 (公共池)")
-    pool = pd.read_sql("SELECT * FROM tasks WHERE status='待领取' AND type='公共任务池'", conn)
+    # 1. 抢单区
+    response = supabase.table("tasks").select("*").eq("status", "待领取").eq("type", "公共任务池").execute()
+    pool = pd.DataFrame(response.data)
     
     if not pool.empty:
+        st.subheader("🔥 待领取任务")
         for i, r in pool.iterrows():
             gold = round(r['difficulty'] * r['std_time'], 2)
-            with st.expander(f"💰 {gold}金币 | {r['title']} (难度{r['difficulty']})"):
+            with st.expander(f"💰 {gold} | {r['title']}"):
                 st.write(f"**详情**: {r['description']}")
                 st.write(f"**截止**: {r['deadline']}")
-                # 管理员只能看，不能抢
                 if role != 'admin':
                     if st.button("⚡️ 抢单", key=f"take_{r['id']}"):
-                        conn.execute("UPDATE tasks SET status='进行中', assignee=? WHERE id=?", (user, r['id']))
-                        conn.commit()
+                        supabase.table("tasks").update({
+                            "status": "进行中", "assignee": user
+                        }).eq("id", int(r['id'])).execute()
                         st.success("抢单成功！")
-                        time.sleep(0.5)
+                        time.sleep(1)
                         st.rerun()
                 else:
                     st.caption("🔒 管理员仅查看")
     else:
-        st.caption("暂无待领取任务")
-        
+        st.info("公共池暂无任务")
+    
     st.divider()
     
-    # 2. 全员看板
-    st.subheader("🔭 实时看板")
-    active = pd.read_sql("SELECT title, assignee, status, deadline FROM tasks WHERE status IN ('进行中','返工','待验收')", conn)
-    st.dataframe(active, use_container_width=True)
+    # 2. 实时看板
+    st.subheader("🔭 实时进度")
+    # 获取进行中、待验收、返工
+    tasks = run_query("tasks")
+    if not tasks.empty:
+        active = tasks[tasks['status'].isin(['进行中', '返工', '待验收'])]
+        st.dataframe(active[['title', 'assignee', 'status', 'deadline']], use_container_width=True)
     
     st.divider()
     
     # 3. 完工记录
     st.subheader("📜 完工御批")
-    done = pd.read_sql("SELECT title, assignee, quality, feedback, difficulty*std_time*quality as earned FROM tasks WHERE status='完成' ORDER BY completed_at DESC", conn)
-    st.dataframe(done, use_container_width=True)
+    if not tasks.empty:
+        done = tasks[tasks['status']=='完成']
+        if not done.empty:
+            done['earned'] = done['difficulty'] * done['std_time'] * done['quality']
+            st.dataframe(done[['title', 'assignee', 'earned', 'feedback', 'completed_at']], use_container_width=True)
 
-# ================= 👤 我的任务 (仅成员) =================
+# ================= 👤 我的任务 =================
 elif choice == "👤 我的任务":
     st.header("⚔️ 我的战场")
-    my = pd.read_sql(f"SELECT * FROM tasks WHERE assignee='{user}' AND status='进行中'", conn)
+    # 查询我的进行中任务
+    response = supabase.table("tasks").select("*").eq("assignee", user).eq("status", "进行中").execute()
+    my = pd.DataFrame(response.data)
     
     if not my.empty:
         for i, r in my.iterrows():
             with st.container(border=True):
                 c1, c2 = st.columns([3, 1])
                 c1.write(f"**{r['title']}**")
-                c1.caption(f"截止: {r['deadline']} | 详情: {r['description']}")
-                if c2.button("✅ 提交验收", key=f"sub_{r['id']}"):
-                    conn.execute("UPDATE tasks SET status='待验收' WHERE id=?", (r['id'],))
-                    conn.commit()
+                c1.caption(f"截止: {r['deadline']}")
+                if c2.button("✅ 提交验收", key=r['id']):
+                    supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
                     st.success("已提交！")
-                    time.sleep(0.5)
+                    time.sleep(1)
                     st.rerun()
     else:
-        st.info("暂无进行中任务，请去大厅抢单。")
+        st.info("暂无任务，请去大厅抢单")
 
-# ================= 🏆 颜祖风云榜 (全员可见) =================
-elif choice == "🏆 颜祖风云榜":
+# ================= 🏆 风云榜 =================
+elif choice == "🏆 风云榜":
     st.header("🏆 颜祖富豪榜")
-    # 只显示 member
-    mems = pd.read_sql("SELECT username FROM users WHERE role='member'", conn)
-    
-    if not mems.empty:
+    udf = run_query("users")
+    if not udf.empty:
+        mems = udf[udf['role']!='admin']['username'].tolist()
         data = []
-        for m in mems['username']:
+        for m in mems:
             g, p = get_gold_stats(m)
             data.append({"成员": m, "净金币": g, "缺勤次数": p})
         
-        df = pd.DataFrame(data).sort_values("净金币", ascending=False)
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("暂无数据")
+        if data:
+            df = pd.DataFrame(data).sort_values("净金币", ascending=False)
+            st.dataframe(df, use_container_width=True)
