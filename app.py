@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V27.2",
+    page_title="颜祖美学·执行中枢 V27.3",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -55,7 +55,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v27_2_dialog_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v27_3_alert_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -207,15 +207,36 @@ def show_task_history(username, role):
             st.caption(f"共找到 {len(filtered_df)} 条记录")
         else: st.info("未找到符合条件的记录")
 
-# --- 新增：成功弹窗函数 ---
+# --- 弹窗函数 ---
 @st.dialog("✅ 系统提示")
 def show_success_modal(msg="操作成功！"):
     st.write(msg)
     if st.button("关闭", type="primary"):
         st.rerun()
 
-QUOTES = ["管理者的跃升，是从'对任务负责'到'对目标负责'。", "没有执行力，一切战略都是空谈。", "不要假装努力，结果不会陪你演戏。"]
-ENCOURAGEMENTS = ["🔥 哪怕是一颗螺丝钉，也要拧得比别人紧！", "🚀 相信你的能力，这个任务非你莫属！", "💪 干就完了！期待你的完美交付。"]
+# --- 扩容后的励志语录库 ---
+QUOTES = [
+    "AI不会淘汰人，利用AI的人会淘汰不用AI的人。",
+    "不要假装努力，结果不会陪你演戏。",
+    "种一棵树最好的时间是十年前，其次是现在。",
+    "在风口上，猪都能飞起来；但我们要做那只长出翅膀的鹰。",
+    "管理者的跃升，是从'对任务负责'到'对目标负责'。",
+    "未来已来，只是分布不均。抓住现在，就是抓住未来。",
+    "凡是过往，皆为序章。凡是未来，皆可期待。",
+    "星光不问赶路人，时光不负有心人。",
+    "没有执行力，一切战略都是空谈。",
+    "系统工作的效率，是对抗个体努力瓶颈的唯一解药。",
+    "所有的横空出世，都是蓄谋已久。",
+    "不是因为看到了希望才坚持，而是坚持了才能看到希望。",
+    "将来的你，一定会感谢现在拼命的自己。",
+    "在这个AI时代，创造力是你唯一的不可替代性。",
+    "极致的交付，是最高级的才华。",
+    "每天进步一点点，坚持带来大改变。",
+    "与其焦虑未来，不如深耕现在。",
+    "你的每一次交付，都在为颜祖帝国添砖加瓦。",
+    "只有在该休息时休息，才能在该冲刺时冲刺。",
+    "不积跬步，无以至千里。"
+]
 
 # --- 5. 鉴权与自动登录 ---
 if 'user' not in st.session_state:
@@ -231,7 +252,8 @@ if st.session_state.user is None:
         st.rerun()
 if st.session_state.user is None:
     st.title("🏛️ 颜祖美学·执行中枢")
-    st.info(f"🔥 {random.choice(QUOTES)}")
+    # 登录页语录
+    st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6">🔥 {random.choice(QUOTES)}</marquee></div>""", unsafe_allow_html=True)
     c1, c2 = st.columns(2)
     with c1:
         with st.form("login"):
@@ -261,9 +283,41 @@ if st.session_state.user is None:
 user = st.session_state.user
 role = st.session_state.role
 
-ann_text = get_announcement()
-st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6">🔔 公告：{ann_text}</marquee></div>""", unsafe_allow_html=True)
+# 主页语录
+st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6">🔔 公告：{get_announcement()}  |  💡 每日金句：{random.choice(QUOTES)}</marquee></div>""", unsafe_allow_html=True)
 st.title(f"🏛️ 帝国中枢 · {user}")
+
+# --- 新增：登录即显示的弹窗提醒 (Feature 2) ---
+@st.dialog("🔔 战场急报")
+def show_alerts(alerts):
+    st.write("您有最新的任务动态：")
+    for msg in alerts:
+        st.info(msg)
+    if st.button("知道了，退下吧", type="primary"):
+        st.rerun()
+
+# 检查是否有今日完成或需要返工的任务
+if 'alert_shown' not in st.session_state:
+    st.session_state.alert_shown = False
+
+if not st.session_state.alert_shown and role != 'admin':
+    # 检查今日完成
+    tdf_alert = run_query("tasks")
+    if not tdf_alert.empty:
+        my_alerts = []
+        # 1. 今日评分
+        today_done = tdf_alert[(tdf_alert['assignee']==user) & (tdf_alert['status']=='完成') & (tdf_alert['completed_at'] == datetime.date.today())]
+        if not today_done.empty:
+            my_alerts.append(f"🎉 喜报！您有 {len(today_done)} 个任务今日已被验收评分！")
+        # 2. 需返工
+        rework_tasks = tdf_alert[(tdf_alert['assignee']==user) & (tdf_alert['status']=='返工')]
+        if not rework_tasks.empty:
+            my_alerts.append(f"⚠️ 警报！您有 {len(rework_tasks)} 个任务被退回需返工！请立即处理。")
+        
+        if my_alerts:
+            show_alerts(my_alerts)
+            st.session_state.alert_shown = True
+
 nav = st.radio("NAV", ["📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"], horizontal=True, label_visibility="collapsed")
 st.divider()
 
@@ -296,21 +350,20 @@ if nav == "📋 任务大厅":
                 with cols[i % 3]:
                     with st.container(border=True):
                         st.markdown(f"**{row['title']}**")
-                        # 细节可见
                         st.write(f"⚙️ **难度**: {row['difficulty']} | ⏱️ **工时**: {row['std_time']}")
                         st.write(f"📅 **截止**: {format_deadline(row.get('deadline'))}")
-                        
                         with st.expander("👁️ 查看详情"):
                             st.write(row.get('description', '无详情'))
                         if st.button("⚡️ 抢单", key=f"g_{row['id']}", type="primary"):
                             can_grab = True
                             if role != 'admin':
-                                my_ongoing = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中') & (tdf['type'] == '公共任务池')]
+                                # 修改：返工任务也算在进行中
+                                my_ongoing = tdf[(tdf['assignee'] == user) & (tdf['status'].isin(['进行中', '返工'])) & (tdf['type'] == '公共任务池')]
                                 if len(my_ongoing) >= 2: can_grab = False
                             if can_grab:
                                 supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(row['id'])).execute()
                                 show_success_modal("任务抢夺成功！请前往我的战场查看。")
-                            else: st.warning("✋ 贪多嚼不烂！您已有 2 个公共任务在进行中。")
+                            else: st.warning("✋ 贪多嚼不烂！您已有 2 个公共任务在进行中（含返工）。")
     st.divider()
     c1, c2 = st.columns(2)
     with c1:
@@ -394,7 +447,6 @@ elif nav == "🏰 个人中心":
                     ic1, ic2 = st.columns([4, 1])
                     with ic1:
                         st.markdown(f"**{r['title']}**")
-                        # 细节可见
                         st.write(f"📅 **截止**: {format_deadline(r.get('deadline'))}")
                     if ic2.button("✅ 完成", key=f"fin_{r['id']}"):
                         supabase.table("tasks").update({"status": "完成", "quality": 1.0, "completed_at": str(datetime.date.today()), "feedback": "统帅自结"}).eq("id", int(r['id'])).execute()
@@ -507,12 +559,19 @@ elif nav == "🏰 个人中心":
             if not pend.empty:
                 sel_p = st.selectbox("待审任务", pend['id'], format_func=lambda x: pend[pend['id']==x]['title'].values[0])
                 with st.container(border=True):
-                    qual = st.slider("质量评分", 0.0, 3.0, 1.0, 0.1)
+                    # --- 修改点：返工逻辑 ---
                     res = st.selectbox("裁决结果", ["完成", "返工"])
+                    if res == "完成":
+                        qual = st.slider("质量评分", 0.0, 3.0, 1.0, 0.1)
+                    else:
+                        st.warning("⚠️ 返工任务不打分，直接退回给成员。")
+                        qual = None 
+                    
                     fb = st.text_area("御批反馈")
                     if st.button("提交审核"):
                         cat = str(datetime.date.today()) if res=="完成" else None
-                        supabase.table("tasks").update({"quality": qual, "status": res, "feedback": fb, "completed_at": cat}).eq("id", int(sel_p)).execute()
+                        q_val = qual if res=="完成" else 0.0
+                        supabase.table("tasks").update({"quality": q_val, "status": res, "feedback": fb, "completed_at": cat}).eq("id", int(sel_p)).execute()
                         show_success_modal("裁决已提交！")
             else: st.info("暂无待审任务")
 
@@ -557,15 +616,22 @@ elif nav == "🏰 个人中心":
     else: # 成员界面
         st.header("⚔️ 我的战场")
         tdf = run_query("tasks")
-        my = tdf[(tdf['assignee']==user) & (tdf['status']=='进行中')]
+        # 修改：同时查询进行中和返工
+        my = tdf[(tdf['assignee']==user) & (tdf['status'].isin(['进行中', '返工']))]
         for i, r in my.iterrows():
             with st.container(border=True):
-                st.markdown(f"**{r['title']}**")
-                # 细节可见 (成员端)
+                # 状态标记
+                prefix = "🔴 [需返工] " if r['status'] == '返工' else ""
+                st.markdown(f"**{prefix}{r['title']}**")
+                
                 st.write(f"⚙️ **难度**: {r['difficulty']} | ⏱️ **工时**: {r['std_time']}")
                 st.write(f"📅 **截止**: {format_deadline(r.get('deadline'))}")
+                
                 with st.expander("👁️ 查看详情"):
                     st.write(r.get('description', '无详情'))
+                    if r['status'] == '返工':
+                        st.error(f"返工原因: {r.get('feedback', '无')}")
+                
                 if st.button("✅ 交付验收", key=f"dev_{r['id']}", type="primary"):
                     supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
                     show_success_modal("任务已提交验收！")
