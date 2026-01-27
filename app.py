@@ -3,11 +3,11 @@ import pandas as pd
 import datetime
 import time
 import io
-import random  # <--- 陛下，补上了这个关键的工具包
+import random
 from supabase import create_client, Client
 
 # --- 系统配置 ---
-st.set_page_config(page_title="颜祖美学·执行中枢 V13.1", layout="wide")
+st.set_page_config(page_title="颜祖美学·执行中枢 V13.2", layout="wide")
 
 # --- 1. 连接 Supabase 云端数据库 ---
 try:
@@ -18,69 +18,82 @@ except Exception as e:
     st.error("🚨 数据库连接失败！请检查 Streamlit Secrets 配置。")
     st.stop()
 
-# --- 2. 核心工具函数 ---
+# --- 2. 核心工具函数 (已修复日期逻辑) ---
 def run_query(table_name):
-    """获取全量数据并转换为 DataFrame，自动处理日期格式"""
+    """获取全量数据并转换为 DataFrame"""
     try:
         response = supabase.table(table_name).select("*").execute()
         df = pd.DataFrame(response.data)
-        if not df.empty:
-            # 自动识别并转换日期列
-            for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
         return df
     except Exception as e:
         return pd.DataFrame()
 
 def calculate_yvp(username, days=None):
     """
-    计算特定时间段内的 YVP
-    逻辑：(总产出) * (1 - 惩罚系数)
-    注意：惩罚系数计算该时间段内的惩罚次数
+    计算特定时间段内的 YVP (修复版)
     """
-    # 1. 获取任务数据
-    tasks = run_query("tasks")
-    if tasks.empty:
-        return 0.0
-
-    # 筛选：指定人 + 已完成
-    mask_user = (tasks['assignee'] == username) & (tasks['status'] == '完成')
-    
-    # 筛选：时间范围
-    if days:
-        cutoff = datetime.date.today() - datetime.timedelta(days=days)
-        # 确保 completed_at 是日期对象
-        # 如果是 NAT (无效时间) 则不参与计算
-        if 'completed_at' in tasks.columns:
-            mask_time = tasks['completed_at'] >= cutoff
-            user_tasks = tasks[mask_user & mask_time]
-        else:
+    try:
+        # 1. 获取任务数据
+        tasks = run_query("tasks")
+        if tasks.empty:
             return 0.0
-    else:
-        user_tasks = tasks[mask_user]
 
-    # 计算毛收入
-    gross = 0.0
-    if not user_tasks.empty:
-        gross = (user_tasks['difficulty'] * user_tasks['std_time'] * user_tasks['quality']).sum()
+        # 确保关键列存在
+        if 'completed_at' not in tasks.columns:
+            return 0.0
 
-    # 2. 获取惩罚数据
-    pens = run_query("penalties")
-    pen_cnt = 0
-    if not pens.empty:
-        mask_pen_user = pens['username'] == username
+        # === 关键修复：日期标准化 ===
+        # 强制转换为 Pandas 时间格式，错误的变成 NaT (空)
+        tasks['completed_at'] = pd.to_datetime(tasks['completed_at'], errors='coerce')
+
+        # 筛选：指定人 + 已完成 + 有效的完成时间
+        # dropna(subset=['completed_at']) 非常关键，防止拿空时间去比大小
+        valid_tasks = tasks[
+            (tasks['assignee'] == username) & 
+            (tasks['status'] == '完成')
+        ].dropna(subset=['completed_at'])
+        
+        # 筛选：时间范围
         if days:
-            cutoff = datetime.date.today() - datetime.timedelta(days=days)
-            if 'occurred_at' in pens.columns:
-                mask_pen_time = pens['occurred_at'] >= cutoff
-                pen_cnt = len(pens[mask_pen_user & mask_pen_time])
+            # 统一使用 pd.Timestamp 做减法，避免类型冲突
+            cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+            # 确保时区一致性，这里简化为不带时区比较
+            cutoff = cutoff.tz_localize(None)
+            valid_tasks['completed_at'] = valid_tasks['completed_at'].dt.tz_localize(None)
+            
+            user_tasks = valid_tasks[valid_tasks['completed_at'] >= cutoff]
         else:
-            pen_cnt = len(pens[mask_pen_user])
+            user_tasks = valid_tasks
 
-    # 3. 计算净值 (每次惩罚扣 20%)
-    net = gross * (1 - min(pen_cnt * 0.2, 1.0))
-    return round(net, 2)
+        # 计算毛收入
+        gross = 0.0
+        if not user_tasks.empty:
+            gross = (user_tasks['difficulty'] * user_tasks['std_time'] * user_tasks['quality']).sum()
+
+        # 2. 获取惩罚数据
+        pens = run_query("penalties")
+        pen_cnt = 0
+        if not pens.empty and 'occurred_at' in pens.columns:
+            # 标准化惩罚日期
+            pens['occurred_at'] = pd.to_datetime(pens['occurred_at'], errors='coerce')
+            valid_pens = pens[pens['username'] == username].dropna(subset=['occurred_at'])
+            
+            if days:
+                cutoff = pd.Timestamp.now() - pd.Timedelta(days=days)
+                cutoff = cutoff.tz_localize(None)
+                valid_pens['occurred_at'] = valid_pens['occurred_at'].dt.tz_localize(None)
+                pen_cnt = len(valid_pens[valid_pens['occurred_at'] >= cutoff])
+            else:
+                pen_cnt = len(valid_pens)
+
+        # 3. 计算净值 (每次惩罚扣 20%)
+        net = gross * (1 - min(pen_cnt * 0.2, 1.0))
+        return round(net, 2)
+        
+    except Exception as e:
+        # 万一出错，返回0而不报错崩溃
+        print(f"Calculation Error for {username}: {e}")
+        return 0.0
 
 # --- 3. 励志语录 ---
 QUOTES = [
@@ -93,9 +106,7 @@ QUOTES = [
 # --- 4. 登录界面 ---
 if 'user' not in st.session_state:
     st.title("🏛️ 颜祖美学·云端执行中枢")
-    st.caption("Data Secured by Supabase™ | V13.1")
-    
-    # 这里现在肯定不会报错了，因为 random 已经导入
+    st.caption("Data Secured by Supabase™ | V13.2 Stable")
     st.info(f"🔥 {random.choice(QUOTES)}")
     
     col1, col2 = st.columns(2)
@@ -133,7 +144,7 @@ if 'user' not in st.session_state:
 user = st.session_state.user
 role = st.session_state.role
 
-# === 侧边栏：个人战绩 (新增功能4) ===
+# === 侧边栏：个人战绩 ===
 st.sidebar.title(f"👤 {user}")
 if role == 'admin':
     st.sidebar.caption("👑 最高指挥官")
@@ -165,7 +176,7 @@ choice = st.sidebar.radio("导航", menu)
 # ================= 👑 管理员控制台 =================
 if choice == "👑 核心控制台" and role == 'admin':
     st.header("👑 最高统帅部")
-    t1, t2, t3, t4, t5 = st.tabs(["🚀 发布", "📝 任务管理(增删改)", "⚖️ 裁决", "🚨 惩罚", "💾 备份与人员"])
+    t1, t2, t3, t4, t5 = st.tabs(["🚀 发布", "📝 任务管理", "⚖️ 裁决", "🚨 惩罚", "💾 备份与人员"])
     
     with t1: # 发布
         c1, c2 = st.columns(2)
@@ -194,24 +205,17 @@ if choice == "👑 核心控制台" and role == 'admin':
             }).execute()
             st.success("发布成功！")
 
-    with t2: # 任务管理 (新增功能1：编辑和删除)
+    with t2: # 任务管理
         st.subheader("🛠️ 全局任务修正")
-        st.info("此处可编辑或删除系统内任何任务（包括已完成的）。")
         
         tasks_df = run_query("tasks")
         if not tasks_df.empty:
-            # 筛选器
-            status_list = list(tasks_df['status'].unique()) if 'status' in tasks_df.columns else []
-            if status_list:
-                filter_status = st.multiselect("筛选状态", status_list, default=status_list)
-                filtered_df = tasks_df[tasks_df['status'].isin(filter_status)]
-            else:
-                filtered_df = tasks_df
+            status_opts = list(tasks_df['status'].unique()) if 'status' in tasks_df.columns else []
+            filter_status = st.multiselect("筛选状态", status_opts, default=status_opts)
+            filtered_df = tasks_df[tasks_df['status'].isin(filter_status)]
             
             if not filtered_df.empty:
                 task_id = st.selectbox("选择要操作的任务", filtered_df['id'], format_func=lambda x: f"ID {x} - {filtered_df[filtered_df['id']==x]['title'].values[0]}")
-                
-                # 获取当前任务详情
                 curr_task = filtered_df[filtered_df['id']==task_id].iloc[0]
                 
                 with st.expander("📝 编辑任务详情", expanded=True):
@@ -223,10 +227,9 @@ if choice == "👑 核心控制台" and role == 'admin':
                         e_t = c_e2.number_input("工时", value=float(curr_task['std_time']))
                         
                         all_status = ["待领取", "进行中", "待验收", "完成", "返工"]
-                        current_status_idx = 0
-                        if curr_task['status'] in all_status:
-                            current_status_idx = all_status.index(curr_task['status'])
-                        e_status = st.selectbox("状态", all_status, index=current_status_idx)
+                        current_s = curr_task['status']
+                        idx = all_status.index(current_s) if current_s in all_status else 0
+                        e_status = st.selectbox("状态", all_status, index=idx)
                         
                         e_assignee = st.text_input("执行人", curr_task['assignee'])
                         
@@ -246,7 +249,7 @@ if choice == "👑 核心控制台" and role == 'admin':
                             time.sleep(1)
                             st.rerun()
             else:
-                st.info("筛选条件下无任务")
+                st.info("筛选后无数据")
         else:
             st.info("系统暂无任务")
 
@@ -287,16 +290,14 @@ if choice == "👑 核心控制台" and role == 'admin':
                 st.success(f"{target} 已受罚")
         st.dataframe(run_query("penalties"))
 
-    with t5: # 备份与人员 (新增功能2)
+    with t5: # 备份与人员
         st.subheader("💾 数据备份")
-        st.info("点击下方按钮下载所有数据，以防更新时丢失。")
+        st.info("点击下方按钮下载所有数据。")
         
-        # 获取所有数据
         df_u = run_query("users")
         df_t = run_query("tasks")
         df_p = run_query("penalties")
         
-        # 转换为 CSV
         csv_buffer = io.StringIO()
         csv_buffer.write("===USERS===\n")
         df_u.to_csv(csv_buffer, index=False)
@@ -322,12 +323,12 @@ if choice == "👑 核心控制台" and role == 'admin':
                     supabase.table("users").delete().eq("username", r['username']).execute()
                     st.rerun()
 
-# ================= 📋 任务大厅 (全员可见) =================
+# ================= 📋 任务大厅 =================
 elif choice == "📋 任务大厅":
     st.header("🛡️ 任务大厅")
     
     # 1. 公共池
-    st.subheader("🔥 公共任务池 (待抢)")
+    st.subheader("🔥 公共任务池")
     tasks = run_query("tasks")
     if not tasks.empty:
         pool = tasks[(tasks['status'] == '待领取') & (tasks['type'] == '公共任务池')]
@@ -346,41 +347,31 @@ elif choice == "📋 任务大厅":
     
     st.divider()
     
-    # 2. 全员正在进行的任务 (新增功能3：所有人可见)
+    # 2. 全军执行动态
     st.subheader("🔭 全军执行动态")
     if not tasks.empty:
-        # 显示所有正在进行或待验收的任务，无论指派给谁
+        # 显示活跃任务
         active_tasks = tasks[tasks['status'].isin(['进行中', '返工', '待验收', '待领取'])]
-        # 过滤掉公共任务池的待领取，只保留指派的和正在做的
+        # 排除掉公共池里还没被领的任务
         active_display = active_tasks[~((active_tasks['status'] == '待领取') & (active_tasks['type'] == '公共任务池'))]
         
         if not active_display.empty:
-            # 简化显示列
-            cols_to_show = ['title', 'assignee', 'status', 'deadline', 'difficulty']
-            # 确保列存在
-            final_cols = [c for c in cols_to_show if c in active_display.columns]
-            
-            st.dataframe(
-                active_display[final_cols], 
-                use_container_width=True,
-                hide_index=True
-            )
+            cols = ['title', 'assignee', 'status', 'deadline', 'difficulty']
+            final_cols = [c for c in cols if c in active_display.columns]
+            st.dataframe(active_display[final_cols], use_container_width=True, hide_index=True)
         else:
             st.caption("全军休整中...")
 
     st.divider()
     
-    # 3. 完工记录
+    # 3. 历史
     st.subheader("📜 历史荣誉榜")
     if not tasks.empty:
         done = tasks[tasks['status'] == '完成']
         if not done.empty:
-            # 计算实际获得
             done['YVP'] = done['difficulty'] * done['std_time'] * done['quality']
-            
-            cols_to_show = ['title', 'assignee', 'completed_at', 'YVP', 'feedback']
-            final_cols = [c for c in cols_to_show if c in done.columns]
-            
+            cols = ['title', 'assignee', 'completed_at', 'YVP', 'feedback']
+            final_cols = [c for c in cols if c in done.columns]
             st.dataframe(done[final_cols], use_container_width=True)
 
 # ================= 👤 我的任务 =================
@@ -403,7 +394,7 @@ elif choice == "👤 我的任务":
         else:
             st.info("暂无进行中任务")
 
-# ================= 🏆 风云榜 (新增功能5：多维榜单) =================
+# ================= 🏆 风云榜 =================
 elif choice == "🏆 颜祖风云榜":
     st.header("🏆 颜祖富豪榜")
     
@@ -411,7 +402,6 @@ elif choice == "🏆 颜祖风云榜":
     if not users.empty:
         mems = users[users['role'] != 'admin']['username'].tolist()
         
-        # 定义生成榜单数据的函数
         def get_leaderboard_data(days):
             data = []
             for m in mems:
@@ -419,17 +409,8 @@ elif choice == "🏆 颜祖风云榜":
                 data.append({"成员": m, "YVP": yvp})
             return pd.DataFrame(data).sort_values("YVP", ascending=False)
 
-        # 选项卡
-        tab_7, tab_30, tab_all = st.tabs(["📅 过去 7 天", "🗓️ 过去 30 天", "🔥 历史总榜"])
+        t7, t30, tall = st.tabs(["📅 7 天", "🗓️ 30 天", "🔥 总榜"])
         
-        with tab_7:
-            st.caption("最近一周表现最强战力")
-            st.dataframe(get_leaderboard_data(7), use_container_width=True, hide_index=True)
-            
-        with tab_30:
-            st.caption("月度考核参考")
-            st.dataframe(get_leaderboard_data(30), use_container_width=True, hide_index=True)
-            
-        with tab_all:
-            st.caption("颜祖帝国开国至今总排行")
-            st.dataframe(get_leaderboard_data(None), use_container_width=True, hide_index=True)
+        with t7: st.dataframe(get_leaderboard_data(7), use_container_width=True, hide_index=True)
+        with t30: st.dataframe(get_leaderboard_data(30), use_container_width=True, hide_index=True)
+        with tall: st.dataframe(get_leaderboard_data(None), use_container_width=True, hide_index=True)
