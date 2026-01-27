@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V27.4",
+    page_title="颜祖美学·执行中枢 V28.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -55,7 +55,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v27_4_final_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v28_final_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -486,6 +486,10 @@ elif nav == "🏰 个人中心":
                         "status": st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(tar['status']), key=f"es_{tid}")
                     }).eq("id", int(tid)).execute()
                     if st.button("💾 保存", key=f"eb_{tid}"): st.rerun()
+                    with st.popover("🗑️ 删除任务"):
+                        if st.button("确认删除", key=f"btn_del_task_{tid}", type="primary"):
+                            supabase.table("tasks").delete().eq("id", int(tid)).execute()
+                            show_success_modal("任务已永久删除！")
 
         with tabs[4]: # 🎁 人员与奖惩
             udf = run_query("users")
@@ -522,6 +526,19 @@ elif nav == "🏰 个人中心":
                             st.rerun()
             else: st.info("暂无奖励记录")
             st.divider()
+            st.markdown("#### 🚨 考勤/惩罚记录管理 (可撤销)")
+            pens_all = run_query("penalties")
+            if not pens_all.empty:
+                for i, p in pens_all.sort_values("occurred_at", ascending=False).iterrows():
+                    with st.container(border=True):
+                        cp1, cp2, cp3 = st.columns([3,2,1])
+                        cp1.write(f"**{p['username']}** : {p['reason']}")
+                        cp2.caption(f"日期: {p['occurred_at']}")
+                        if cp3.button("撤销", key=f"del_pen_{p['id']}"):
+                            supabase.table("penalties").delete().eq("id", int(p['id'])).execute()
+                            st.rerun()
+            else: st.info("暂无考勤/惩罚记录")
+            st.divider()
             st.markdown("#### 👥 成员账号管理")
             for i, m in udf[udf['role']!='admin'].iterrows():
                 with st.container(border=True):
@@ -555,7 +572,6 @@ elif nav == "🏰 个人中心":
             else: st.info("暂无待审任务")
 
         with tabs[6]: # 公告
-            # 修复：防止NameError，重新获取
             current_ann = get_announcement()
             new_ann = st.text_input("输入新公告内容", placeholder=current_ann)
             if st.button("立即发布公告"):
@@ -600,18 +616,14 @@ elif nav == "🏰 个人中心":
         my = tdf[(tdf['assignee']==user) & (tdf['status'].isin(['进行中', '返工']))]
         for i, r in my.iterrows():
             with st.container(border=True):
-                # 状态标记
                 prefix = "🔴 [需返工] " if r['status'] == '返工' else ""
                 st.markdown(f"**{prefix}{r['title']}**")
-                
                 st.write(f"⚙️ **难度**: {r['difficulty']} | ⏱️ **工时**: {r['std_time']}")
                 st.write(f"📅 **截止**: {format_deadline(r.get('deadline'))}")
-                
                 with st.expander("👁️ 查看详情"):
                     st.write(r.get('description', '无详情'))
                     if r['status'] == '返工':
                         st.error(f"返工原因: {r.get('feedback', '无')}")
-                
                 if st.button("✅ 交付验收", key=f"dev_{r['id']}", type="primary"):
                     supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
                     show_success_modal("任务已提交验收！")
