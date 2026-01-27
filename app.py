@@ -9,13 +9,12 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V24.1",
+    page_title="颜祖美学·执行中枢 V25.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 样式优化
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -25,7 +24,6 @@ st.markdown("""
         div[data-testid="stToolbar"] {visibility: hidden;}
         div[data-testid="stDecoration"] {visibility: hidden;}
         div[data-testid="stStatusWidget"] {visibility: hidden;}
-        
         div[data-testid="stRadio"] > div {
             flex-direction: row;
             justify-content: center;
@@ -34,7 +32,6 @@ st.markdown("""
             border-radius: 8px;
             border: 1px solid #dee2e6;
         }
-        
         .scrolling-text {
             width: 100%;
             background-color: #fff3cd;
@@ -58,12 +55,11 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v24_1_fix_dead")
+cookie_manager = stx.CookieManager(key="yanzu_v25_hist_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
 def run_query(table_name):
-    """仅对纯数据查询使用缓存"""
     try:
         response = supabase.table(table_name).select("*").execute()
         df = pd.DataFrame(response.data)
@@ -86,7 +82,6 @@ def update_announcement(text):
     supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": str(datetime.datetime.now())}).execute()
 
 def calculate_net_yvp(username, days_lookback=None):
-    # 管理员不计分
     users = run_query("users")
     if not users.empty:
         user_row = users[users['username']==username]
@@ -96,21 +91,18 @@ def calculate_net_yvp(username, days_lookback=None):
     tasks = run_query("tasks")
     if tasks.empty: return 0.0
     
-    # 筛选已完成
     my_done = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
     if my_done.empty: return 0.0
     
     my_done['val'] = my_done['difficulty'] * my_done['std_time'] * my_done['quality']
     my_done['completed_at'] = pd.to_datetime(my_done['completed_at'])
     
-    # 时间筛选
     if days_lookback:
         cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
         my_done = my_done[my_done['completed_at'] >= cutoff]
     
     gross = my_done['val'].sum()
 
-    # 罚款逻辑
     total_fine = 0.0
     
     penalties = run_query("penalties")
@@ -118,7 +110,6 @@ def calculate_net_yvp(username, days_lookback=None):
         my_pens = penalties[penalties['username'] == username].copy()
         if not my_pens.empty:
             my_pens['occurred_at'] = pd.to_datetime(my_pens['occurred_at'])
-            
             if days_lookback:
                 cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                 my_pens = my_pens[my_pens['occurred_at'] >= cutoff]
@@ -128,22 +119,17 @@ def calculate_net_yvp(username, days_lookback=None):
                 base_tasks = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
                 base_tasks['val'] = base_tasks['difficulty'] * base_tasks['std_time'] * base_tasks['quality']
                 base_tasks['completed_at'] = pd.to_datetime(base_tasks['completed_at'])
-                
                 w_tasks = base_tasks[(base_tasks['completed_at'] >= w_start) & (base_tasks['completed_at'] <= pen['occurred_at'])]
                 total_fine += w_tasks['val'].sum() * 0.2
 
     return round(gross - total_fine, 2)
 
 def calculate_period_stats(start_date, end_date):
-    """管理员专用：计算指定时间段的分润统计"""
     users = run_query("users")
     members = users[users['role'] != 'admin']['username'].tolist()
-    
     stats_data = []
-    
     tasks = run_query("tasks")
     pens = run_query("penalties")
-    
     ts_start = pd.Timestamp(start_date)
     ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
@@ -155,7 +141,6 @@ def calculate_period_stats(start_date, end_date):
                 m_tasks['completed_at'] = pd.to_datetime(m_tasks['completed_at'])
                 in_range = m_tasks[(m_tasks['completed_at'] >= ts_start) & (m_tasks['completed_at'] <= ts_end)]
                 gross = (in_range['difficulty'] * in_range['std_time'] * in_range['quality']).sum()
-        
         fine = 0.0
         pen_count = 0
         if not pens.empty:
@@ -164,31 +149,72 @@ def calculate_period_stats(start_date, end_date):
                 m_pens['occurred_at'] = pd.to_datetime(m_pens['occurred_at'])
                 in_range_pens = m_pens[(m_pens['occurred_at'] >= ts_start) & (m_pens['occurred_at'] <= ts_end)]
                 pen_count = len(in_range_pens)
-                
                 for _, p in in_range_pens.iterrows():
                     w_start = p['occurred_at'] - pd.Timedelta(days=7)
                     all_m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
                     if not all_m_tasks.empty:
                         all_m_tasks['completed_at'] = pd.to_datetime(all_m_tasks['completed_at'])
                         all_m_tasks['val'] = all_m_tasks['difficulty'] * all_m_tasks['std_time'] * all_m_tasks['quality']
-                        
                         w_tasks = all_m_tasks[(all_m_tasks['completed_at'] >= w_start) & (all_m_tasks['completed_at'] <= p['occurred_at'])]
                         fine += w_tasks['val'].sum() * 0.2
-
         net = gross - fine
-        stats_data.append({
-            "成员": m,
-            "区间产出": round(gross, 2),
-            "区间罚款": round(fine, 2),
-            "罚单数": pen_count,
-            "💰 应发YVP": round(net, 2)
-        })
-        
+        stats_data.append({"成员": m, "区间产出": round(gross, 2), "区间罚款": round(fine, 2), "罚单数": pen_count, "💰 应发YVP": round(net, 2)})
     return pd.DataFrame(stats_data).sort_values("💰 应发YVP", ascending=False)
 
 def format_deadline(d_val):
     if pd.isna(d_val) or str(d_val) in ['NaT', 'None', '']: return "♾️ 无期限"
     return str(d_val)
+
+def show_task_history(username, role):
+    """显示任务历史与过滤器模块"""
+    st.divider()
+    st.subheader("📜 任务历史档案")
+    
+    df = run_query("tasks")
+    if df.empty:
+        st.info("暂无数据")
+        return
+
+    # 筛选已完成任务
+    my_history = df[(df['assignee'] == username) & (df['status'] == '完成')].copy()
+    
+    if my_history.empty:
+        st.info("暂无已完成的任务记录")
+    else:
+        # 生成月份列用于筛选
+        my_history['completed_at'] = pd.to_datetime(my_history['completed_at'])
+        my_history['Month'] = my_history['completed_at'].dt.strftime('%Y-%m')
+        
+        # 筛选器
+        c_search, c_filter = st.columns(2)
+        search_kw = c_search.text_input("🔍 搜索任务标题", key=f"hist_search_{username}")
+        
+        month_list = ["全部"] + sorted(my_history['Month'].unique().tolist(), reverse=True)
+        month_sel = c_filter.selectbox("🗓️ 按月份筛选", month_list, key=f"hist_filter_{username}")
+        
+        # 执行筛选
+        filtered_df = my_history.copy()
+        if month_sel != "全部":
+            filtered_df = filtered_df[filtered_df['Month'] == month_sel]
+        if search_kw:
+            filtered_df = filtered_df[filtered_df['title'].str.contains(search_kw, case=False, na=False)]
+            
+        # 展示
+        if not filtered_df.empty:
+            filtered_df['Deadline'] = filtered_df['deadline'].apply(format_deadline)
+            # 格式化日期显示
+            filtered_df['Completed'] = filtered_df['completed_at'].dt.date
+            
+            # 简化展示列
+            cols_show = ['title', 'Completed', 'difficulty', 'std_time', 'quality']
+            st.dataframe(
+                filtered_df[cols_show].sort_values("Completed", ascending=False), 
+                use_container_width=True, 
+                hide_index=True
+            )
+            st.caption(f"共找到 {len(filtered_df)} 条记录")
+        else:
+            st.info("未找到符合条件的记录")
 
 QUOTES = ["管理者的跃升，是从'对任务负责'到'对目标负责'。", "没有执行力，一切战略都是空谈。", "不要假装努力，结果不会陪你演戏。"]
 ENCOURAGEMENTS = ["🔥 哪怕是一颗螺丝钉，也要拧得比别人紧！", "🚀 相信你的能力，这个任务非你莫属！", "💪 干就完了！期待你的完美交付。"]
@@ -288,7 +314,6 @@ if nav == "📋 任务大厅":
                         st.caption(f"📅 截止: {format_deadline(row.get('deadline'))}")
                         st.markdown(f"D:{row['difficulty']} | T:{row['std_time']}")
                         if st.button("⚡️ 抢单", key=f"g_{row['id']}", type="primary"):
-                            # 抢单限制逻辑
                             can_grab = True
                             if role != 'admin':
                                 my_ongoing_public = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中') & (tdf['type'] == '公共任务池')]
@@ -352,14 +377,53 @@ elif nav == "🏰 个人中心":
         if datetime.date.today().day % 10 == 0:
             st.warning(f"📅 **今日为备份提醒日，请下载全量备份。**")
             
-        tabs = st.tabs(["⚡️ 随手记", "💰 分润统计", "🚀 发布任务", "🛠️ 全量管理", "⚖️ 裁决审核", "📢 公告维护", "👥 成员管理", "💾 备份恢复"])
+        tabs = st.tabs(["⚡️ 我的战场(Admin)", "💰 分润统计", "🚀 发布任务", "🛠️ 全量管理", "⚖️ 裁决审核", "📢 公告维护", "👥 成员管理", "💾 备份恢复"])
         
         with tabs[0]:
-            st.info("直接派发给自己的任务，不计分，完成后点击‘归档’。")
-            quick_t = st.text_input("任务标题")
-            if st.button("⚡️ 派发给我", type="primary"):
-                supabase.table("tasks").insert({"title": quick_t, "difficulty": 0, "std_time": 0, "status": "进行中", "assignee": user, "type": "AdminSelf"}).execute()
-                st.success("已添加")
+            st.info("💡 统帅自律：此处管理的任务不计积分，仅作公示与记录。")
+            
+            # --- 新增：管理员快捷发布带截止日期 ---
+            st.subheader("⚡️ 快捷派发")
+            qc1, qc2 = st.columns([3, 1])
+            quick_t = qc1.text_input("任务内容", placeholder="输入待办事项...")
+            quick_d = qc2.date_input("截止日期", value=None)
+            
+            if st.button("⚡️ 立即派发给我", type="primary"):
+                dead_val = str(quick_d) if quick_d else None
+                supabase.table("tasks").insert({
+                    "title": quick_t, "difficulty": 0, "std_time": 0, 
+                    "status": "进行中", "assignee": user, "type": "AdminSelf", 
+                    "deadline": dead_val
+                }).execute()
+                st.success("已添加"); st.rerun()
+
+            st.divider()
+            
+            # --- 新增：管理员正在进行的任务 ---
+            st.subheader("🛡️ 进行中任务")
+            tdf = run_query("tasks")
+            my_adm_tasks = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中')]
+            
+            if not my_adm_tasks.empty:
+                for i, r in my_adm_tasks.iterrows():
+                    with st.container(border=True):
+                        c_info, c_act = st.columns([4, 1])
+                        with c_info:
+                            st.markdown(f"**{r['title']}**")
+                            st.caption(f"📅 截止: {format_deadline(r.get('deadline'))}")
+                        with c_act:
+                            if st.button("✅ 完成", key=f"adm_fin_{r['id']}"):
+                                supabase.table("tasks").update({
+                                    "status": "完成", "quality": 1.0, 
+                                    "completed_at": str(datetime.date.today()), 
+                                    "feedback": "自决归档"
+                                }).eq("id", int(r['id'])).execute()
+                                st.success("已归档"); st.rerun()
+            else:
+                st.info("暂无进行中任务")
+                
+            # --- 新增：管理员历史档案 ---
+            show_task_history(user, role)
 
         with tabs[1]: 
             st.subheader("💰 周期分润统计")
@@ -415,26 +479,18 @@ elif nav == "🏰 个人中心":
                         new_qual = st.number_input("修改质量", value=float(target['quality']))
                         new_status = st.selectbox("修改状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(target['status']))
                         
-                        # --- 修改点：增加截止日期编辑 ---
                         c_dead_1, c_dead_2 = st.columns([3, 2])
                         curr_d = target.get('deadline')
                         is_null_d = pd.isna(curr_d) or str(curr_d) in ['None', 'NaT', '']
-                        
                         new_no_dead = c_dead_2.checkbox("无截止日期", value=is_null_d, key=f"dead_chk_{sel_id}")
                         default_d = datetime.date.today()
-                        if not is_null_d:
-                            default_d = curr_d
-                            
+                        if not is_null_d: default_d = curr_d
                         new_dead_val = c_dead_1.date_input("修改截止日期", value=default_d, disabled=new_no_dead, key=f"dead_inp_{sel_id}")
                         
                         if st.button("💾 确认保存修改"):
                             final_new_dead = None if new_no_dead else str(new_dead_val)
-                            supabase.table("tasks").update({
-                                "title": new_title, "difficulty": new_diff, "std_time": new_stdt, 
-                                "quality": new_qual, "status": new_status, "deadline": final_new_dead
-                            }).eq("id", int(sel_id)).execute()
+                            supabase.table("tasks").update({"title": new_title, "difficulty": new_diff, "std_time": new_stdt, "quality": new_qual, "status": new_status, "deadline": final_new_dead}).eq("id", int(sel_id)).execute()
                             st.rerun()
-                            
                         with st.popover("🗑️ 删除任务"):
                             if st.button("确认删除"):
                                 supabase.table("tasks").delete().eq("id", int(sel_id)).execute(); st.rerun()
@@ -483,7 +539,6 @@ elif nav == "🏰 个人中心":
             buf.write("\n===PENALTIES===\n"); d3.to_csv(buf, index=False)
             buf.write("\n===MESSAGES===\n"); d4.to_csv(buf, index=False)
             st.download_button("📥 下载备份", buf.getvalue(), f"backup_{datetime.date.today()}.txt")
-            
             st.divider()
             up_f = st.file_uploader("上传备份文件 (.txt)", type=['txt'])
             if up_f:
@@ -523,6 +578,10 @@ elif nav == "🏰 个人中心":
                         supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
                         st.success("已提交交付"); st.rerun()
         else: st.info("暂无任务，前往大厅看看吧。")
+        
+        # --- 新增：普通成员任务历史 ---
+        show_task_history(user, role)
+        
         st.divider()
         with st.expander("🔐 修改密码"):
             new_p = st.text_input("新密码", type="password")
