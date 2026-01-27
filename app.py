@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V27.0",
+    page_title="颜祖美学·执行中枢 V27.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -55,7 +55,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v27_rewards_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v27_1_fix_login")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -112,7 +112,6 @@ def calculate_net_yvp(username, days_lookback=None):
         if not my_pens.empty:
             my_pens['occurred_at'] = pd.to_datetime(my_pens['occurred_at'])
             
-            # 时间筛选
             if days_lookback:
                 cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                 my_pens = my_pens[my_pens['occurred_at'] >= cutoff]
@@ -128,7 +127,7 @@ def calculate_net_yvp(username, days_lookback=None):
                         w_tasks = base_tasks[(base_tasks['completed_at'] >= w_start) & (base_tasks['completed_at'] <= pen['occurred_at'])]
                         total_fine += w_tasks['val'].sum() * 0.2
     
-    # 3. 奖励加成 (新增)
+    # 3. 奖励加成
     total_reward = 0.0
     rewards = run_query("rewards")
     if not rewards.empty:
@@ -149,13 +148,12 @@ def calculate_period_stats(start_date, end_date):
     
     tasks = run_query("tasks")
     pens = run_query("penalties")
-    rews = run_query("rewards") # 新增奖励表
+    rews = run_query("rewards")
     
     ts_start = pd.Timestamp(start_date)
     ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
     for m in members:
-        # 任务产出
         gross = 0.0
         if not tasks.empty:
             m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
@@ -164,7 +162,6 @@ def calculate_period_stats(start_date, end_date):
                 in_range = m_tasks[(m_tasks['completed_at'] >= ts_start) & (m_tasks['completed_at'] <= ts_end)]
                 gross = (in_range['difficulty'] * in_range['std_time'] * in_range['quality']).sum()
         
-        # 罚款
         fine = 0.0
         pen_count = 0
         if not pens.empty:
@@ -183,7 +180,6 @@ def calculate_period_stats(start_date, end_date):
                             w_tasks = all_m_tasks[(all_m_tasks['completed_at'] >= w_start) & (all_m_tasks['completed_at'] <= p['occurred_at'])]
                             fine += w_tasks['val'].sum() * 0.2
         
-        # 奖励 (新增)
         reward_val = 0.0
         if not rews.empty:
             m_rews = rews[rews['username'] == m].copy()
@@ -229,7 +225,6 @@ def show_task_history(username, role):
         if not filtered_df.empty:
             filtered_df['Deadline'] = filtered_df['deadline'].apply(format_deadline)
             filtered_df['Completed'] = filtered_df['completed_at'].dt.date
-            # 显示获益YVP
             filtered_df['Earned YVP'] = filtered_df['difficulty'] * filtered_df['std_time'] * filtered_df['quality']
             
             cols_show = ['title', 'Completed', 'difficulty', 'std_time', 'quality', 'Earned YVP', 'feedback']
@@ -254,9 +249,12 @@ if st.session_state.user is None:
         st.rerun()
 if st.session_state.user is None:
     st.title("🏛️ 颜祖美学·执行中枢")
+    # 修复：语录回归
+    st.info(f"🔥 {random.choice(QUOTES)}")
     c1, c2 = st.columns(2)
     with c1:
         with st.form("login"):
+            st.markdown("### 🔑 登录")
             u = st.text_input("用户名")
             p = st.text_input("密码", type="password")
             if st.form_submit_button("🚀 登录", type="primary"):
@@ -268,6 +266,16 @@ if st.session_state.user is None:
                     cookie_manager.set("yanzu_role", res.data[0]['role'], expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
                     st.rerun()
                 else: st.error("账号或密码错误")
+    # 修复：注册模块回归
+    with c2:
+        with st.expander("📝 注册新成员"):
+            nu = st.text_input("用户名", key="reg_u")
+            np = st.text_input("密码", type="password", key="reg_p")
+            if st.button("提交注册", key="btn_reg"):
+                try:
+                    supabase.table("users").insert({"username": nu, "password": np, "role": "member"}).execute()
+                    st.success("注册成功！请直接登录。")
+                except: st.warning("用户名已存在")
     st.stop()
 
 user = st.session_state.user
@@ -336,7 +344,6 @@ if nav == "📋 任务大厅":
         st.subheader("📜 荣誉记录 (最近35条)")
         done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
         if not done.empty:
-            # 2. 显示 YVP 获益
             done['P'] = done.apply(lambda x: f"D{x['difficulty']}/T{x['std_time']}/Q{x['quality']}", axis=1)
             done['💰 获益'] = done['difficulty'] * done['std_time'] * done['quality']
             st.dataframe(done[['title', 'assignee', 'P', '💰 获益']], use_container_width=True, hide_index=True)
@@ -372,7 +379,6 @@ elif nav == "🏆 风云榜":
     st.divider()
     c_r1, c_r2 = st.columns(2)
     with c_r1:
-        # 3. 奖励公开 (功勋簿)
         st.subheader("🏆 功勋簿 (最近10条)")
         rews = run_query("rewards")
         if not rews.empty:
@@ -381,7 +387,6 @@ elif nav == "🏆 风云榜":
         else: st.caption("暂无奖励记录")
 
     with c_r2:
-        # 1. 缺勤公开 (警示录)
         st.subheader("🚨 警示录 (最近10条)")
         pens = run_query("penalties")
         if not pens.empty:
@@ -470,7 +475,7 @@ elif nav == "🏰 个人中心":
                     }).eq("id", int(tid)).execute()
                     if st.button("💾 保存", key=f"eb_{tid}"): st.rerun()
 
-        with tabs[4]: # 🎁 人员与奖惩 (升级)
+        with tabs[4]: # 🎁 人员与奖惩
             udf = run_query("users")
             members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
             
@@ -480,7 +485,6 @@ elif nav == "🏰 个人中心":
                 st.markdown("#### 🚨 考勤管理")
                 with st.container(border=True):
                     target_p = st.selectbox("缺勤成员", members, key="pen_u")
-                    # 1. 选择具体日期
                     date_p = st.date_input("缺勤日期", value=datetime.date.today(), key="pen_d")
                     if st.button("🔴 记录缺勤", key="btn_pen"):
                         supabase.table("penalties").insert({"username": target_p, "occurred_at": str(date_p), "reason": "缺勤"}).execute()
@@ -489,7 +493,6 @@ elif nav == "🏰 个人中心":
             with c_r:
                 st.markdown("#### 🎁 奖励赏赐")
                 with st.container(border=True):
-                    # 3. 奖励功能
                     target_r = st.selectbox("赏赐成员", members, key="rew_u")
                     amt_r = st.number_input("奖励YVP点数", min_value=1.0, step=10.0, key="rew_a")
                     reason_r = st.text_input("奖励理由", placeholder="例：技术攻坚", key="rew_re")
