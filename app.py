@@ -425,5 +425,4 @@ elif nav == "🏰 个人中心":
         with st.expander("🔐 修改密码"):
             np = st.text_input("新密码", type="password")
             if st.button("修改"): supabase.table("users").update({"password": np}).eq("username", user).execute(); st.success("已更新")
-``` 你可以随时让我修改或删除预设操作。预设操作准备就绪时，“近期对话”中的本次对话旁边会出现一个小圆点。
-http://googleusercontent.com/task_confirmation_content/0
+
