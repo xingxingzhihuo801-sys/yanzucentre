@@ -7,15 +7,15 @@ import random
 import extra_streamlit_components as stx
 from supabase import create_client, Client
 
-# --- 1. 系统配置与视觉隐身 ---
+# --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V22.0",
+    page_title="颜祖美学·执行中枢 V23.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 强力 CSS 优化：保留核心 UI，隐藏开发调试工具
+# 样式优化
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -26,7 +26,6 @@ st.markdown("""
         div[data-testid="stDecoration"] {visibility: hidden;}
         div[data-testid="stStatusWidget"] {visibility: hidden;}
         
-        /* 顶部导航菜单横向排列 */
         div[data-testid="stRadio"] > div {
             flex-direction: row;
             justify-content: center;
@@ -36,7 +35,6 @@ st.markdown("""
             border: 1px solid #dee2e6;
         }
         
-        /* 滚动公告样式 */
         .scrolling-text {
             width: 100%;
             background-color: #fff3cd;
@@ -59,8 +57,9 @@ except Exception:
     st.error("🚨 数据库连接配置有误，请检查 Secrets。")
     st.stop()
 
-# --- 3. 初始化 Cookie 管理器 (修复警告的关键：不使用缓存装饰器) ---
-cookie_manager = stx.CookieManager(key="yanzu_v22_cookie_unique")
+# --- 3. Cookie 管理器 (修复重点：移除缓存装饰器) ---
+# 必须直接初始化，不能放在 @st.cache_resource 函数里
+cookie_manager = stx.CookieManager(key="yanzu_v23_fix_cookie_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -82,6 +81,10 @@ def get_announcement():
         return res.data[0]['content'] if res.data else "欢迎来到颜祖美学执行中枢！"
     except:
         return "公告加载中..."
+
+def update_announcement(text):
+    supabase.table("messages").delete().eq("username", "__NOTICE__").execute()
+    supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": str(datetime.datetime.now())}).execute()
 
 def calculate_net_yvp(username, days_lookback=None):
     # 管理员不计分
@@ -123,15 +126,17 @@ def format_deadline(d_val):
     if pd.isna(d_val) or str(d_val) in ['NaT', 'None', '']: return "♾️ 无期限"
     return str(d_val)
 
+QUOTES = ["管理者的跃升，是从'对任务负责'到'对目标负责'。", "没有执行力，一切战略都是空谈。", "不要假装努力，结果不会陪你演戏。"]
+ENCOURAGEMENTS = ["🔥 哪怕是一颗螺丝钉，也要拧得比别人紧！", "🚀 相信你的能力，这个任务非你莫属！", "💪 干就完了！期待你的完美交付。"]
+
 # --- 5. 鉴权与自动登录 ---
 if 'user' not in st.session_state:
     st.session_state.user = None
     st.session_state.role = None
 
-# 尝试通过 Cookie 自动登录
+# Cookie 自动登录尝试
 if st.session_state.user is None:
-    # 稍微等待组件加载
-    time.sleep(0.5)
+    time.sleep(0.5) # 给组件一点加载时间
     c_user = cookie_manager.get("yanzu_user")
     c_role = cookie_manager.get("yanzu_role")
     if c_user and c_role:
@@ -139,9 +144,10 @@ if st.session_state.user is None:
         st.session_state.role = c_role
         st.rerun()
 
-# 登录界面
+# 登录页
 if st.session_state.user is None:
     st.title("🏛️ 颜祖美学·执行中枢")
+    st.info(f"🔥 {random.choice(QUOTES)}")
     c1, c2 = st.columns(2)
     with c1:
         with st.form("login"):
@@ -151,10 +157,11 @@ if st.session_state.user is None:
             if st.form_submit_button("进入系统", type="primary"):
                 res = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
                 if res.data:
+                    role = res.data[0]['role']
                     st.session_state.user = u
-                    st.session_state.role = res.data[0]['role']
+                    st.session_state.role = role
                     cookie_manager.set("yanzu_user", u, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
-                    cookie_manager.set("yanzu_role", st.session_state.role, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
+                    cookie_manager.set("yanzu_role", role, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
                     st.success("验证成功")
                     time.sleep(0.5)
                     st.rerun()
@@ -193,6 +200,7 @@ with st.sidebar:
         st.metric("总净资产", yvp_all)
     st.divider()
     if st.button("注销并退出"):
+        # 清除 Cookie 并刷新
         cookie_manager.set("yanzu_user", "", expires_at=datetime.datetime.now() - datetime.timedelta(days=1))
         cookie_manager.set("yanzu_role", "", expires_at=datetime.datetime.now() - datetime.timedelta(days=1))
         st.session_state.user = None
@@ -217,10 +225,28 @@ if nav == "📋 任务大厅":
                         st.markdown(f"**{row['title']}**")
                         st.caption(f"📅 截止: {format_deadline(row.get('deadline'))}")
                         st.markdown(f"D:{row['difficulty']} | T:{row['std_time']}")
+                        
                         if st.button("⚡️ 抢单", key=f"g_{row['id']}", type="primary"):
-                            supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(row['id'])).execute()
-                            st.toast("任务已领取，加油！", icon="🚀")
-                            time.sleep(0.5); st.rerun()
+                            # --- Feature 2: 抢单限制检查 ---
+                            can_grab = True
+                            if role != 'admin':
+                                # 检查该用户当前手里有多少个“进行中”的“公共任务”
+                                my_ongoing_public = tdf[
+                                    (tdf['assignee'] == user) & 
+                                    (tdf['status'] == '进行中') & 
+                                    (tdf['type'] == '公共任务池')
+                                ]
+                                if len(my_ongoing_public) >= 2:
+                                    can_grab = False
+                            
+                            if can_grab:
+                                supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(row['id'])).execute()
+                                st.toast("🚀 任务已领取，加油！", icon="🔥")
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.warning("✋ 贪多嚼不烂！您已有 2 个公共任务正在进行中，请先交付验收后再来抢单。")
+                                
         else: st.info("目前池中无任务")
 
     st.divider()
@@ -229,7 +255,9 @@ if nav == "📋 任务大厅":
         st.subheader("🔭 实时动态")
         active = tdf[tdf['status'].isin(['进行中', '返工', '待验收'])]
         if not active.empty:
-            st.dataframe(active[['title', 'assignee', 'status']], use_container_width=True, hide_index=True)
+            active_display = active.copy()
+            active_display['Deadline'] = active_display['deadline'].apply(format_deadline)
+            st.dataframe(active_display[['title', 'assignee', 'status', 'Deadline']], use_container_width=True, hide_index=True)
     with c2:
         st.subheader("📜 荣誉记录")
         done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(10)
@@ -312,9 +340,11 @@ elif nav == "🏰 个人中心":
                     with st.container(border=True):
                         new_title = st.text_input("修改标题", target['title'])
                         new_diff = st.number_input("修改难度", value=float(target['difficulty']))
+                        new_stdt = st.number_input("修改工时", value=float(target['std_time']))
+                        new_qual = st.number_input("修改质量", value=float(target['quality']))
                         new_status = st.selectbox("修改状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(target['status']))
                         if st.button("💾 确认保存修改"):
-                            supabase.table("tasks").update({"title": new_title, "difficulty": new_diff, "status": new_status}).eq("id", int(sel_id)).execute()
+                            supabase.table("tasks").update({"title": new_title, "difficulty": new_diff, "std_time": new_stdt, "quality": new_qual, "status": new_status}).eq("id", int(sel_id)).execute()
                             st.rerun()
                         with st.popover("🗑️ 删除任务"):
                             if st.button("确认删除"):
@@ -392,7 +422,6 @@ elif nav == "🏰 个人中心":
     else: # 成员界面
         st.header("⚔️ 我的战场")
         tdf = run_query("tasks")
-        # 评分提醒
         td_done = tdf[(tdf['assignee']==user) & (tdf['status']=='完成') & (tdf['completed_at'] == datetime.date.today())]
         if not td_done.empty: st.info(f"🔔 喜报！您有 {len(td_done)} 个任务今日已评分！")
         
