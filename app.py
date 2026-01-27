@@ -3,10 +3,11 @@ import pandas as pd
 import datetime
 import time
 import io
+import random  # <--- 陛下，补上了这个关键的工具包
 from supabase import create_client, Client
 
 # --- 系统配置 ---
-st.set_page_config(page_title="颜祖美学·执行中枢 V13.0", layout="wide")
+st.set_page_config(page_title="颜祖美学·执行中枢 V13.1", layout="wide")
 
 # --- 1. 连接 Supabase 云端数据库 ---
 try:
@@ -50,8 +51,12 @@ def calculate_yvp(username, days=None):
     if days:
         cutoff = datetime.date.today() - datetime.timedelta(days=days)
         # 确保 completed_at 是日期对象
-        mask_time = tasks['completed_at'] >= cutoff
-        user_tasks = tasks[mask_user & mask_time]
+        # 如果是 NAT (无效时间) 则不参与计算
+        if 'completed_at' in tasks.columns:
+            mask_time = tasks['completed_at'] >= cutoff
+            user_tasks = tasks[mask_user & mask_time]
+        else:
+            return 0.0
     else:
         user_tasks = tasks[mask_user]
 
@@ -67,8 +72,9 @@ def calculate_yvp(username, days=None):
         mask_pen_user = pens['username'] == username
         if days:
             cutoff = datetime.date.today() - datetime.timedelta(days=days)
-            mask_pen_time = pens['occurred_at'] >= cutoff
-            pen_cnt = len(pens[mask_pen_user & mask_pen_time])
+            if 'occurred_at' in pens.columns:
+                mask_pen_time = pens['occurred_at'] >= cutoff
+                pen_cnt = len(pens[mask_pen_user & mask_pen_time])
         else:
             pen_cnt = len(pens[mask_pen_user])
 
@@ -87,7 +93,9 @@ QUOTES = [
 # --- 4. 登录界面 ---
 if 'user' not in st.session_state:
     st.title("🏛️ 颜祖美学·云端执行中枢")
-    st.caption("Data Secured by Supabase™ | V13.0")
+    st.caption("Data Secured by Supabase™ | V13.1")
+    
+    # 这里现在肯定不会报错了，因为 random 已经导入
     st.info(f"🔥 {random.choice(QUOTES)}")
     
     col1, col2 = st.columns(2)
@@ -193,8 +201,12 @@ if choice == "👑 核心控制台" and role == 'admin':
         tasks_df = run_query("tasks")
         if not tasks_df.empty:
             # 筛选器
-            filter_status = st.multiselect("筛选状态", tasks_df['status'].unique(), default=tasks_df['status'].unique())
-            filtered_df = tasks_df[tasks_df['status'].isin(filter_status)]
+            status_list = list(tasks_df['status'].unique()) if 'status' in tasks_df.columns else []
+            if status_list:
+                filter_status = st.multiselect("筛选状态", status_list, default=status_list)
+                filtered_df = tasks_df[tasks_df['status'].isin(filter_status)]
+            else:
+                filtered_df = tasks_df
             
             if not filtered_df.empty:
                 task_id = st.selectbox("选择要操作的任务", filtered_df['id'], format_func=lambda x: f"ID {x} - {filtered_df[filtered_df['id']==x]['title'].values[0]}")
@@ -205,11 +217,17 @@ if choice == "👑 核心控制台" and role == 'admin':
                 with st.expander("📝 编辑任务详情", expanded=True):
                     with st.form("edit_form"):
                         e_title = st.text_input("标题", curr_task['title'])
-                        e_desc = st.text_area("描述", curr_task['description'])
+                        e_desc = st.text_area("描述", curr_task.get('description', ''))
                         c_e1, c_e2 = st.columns(2)
                         e_d = c_e1.number_input("难度", value=float(curr_task['difficulty']))
                         e_t = c_e2.number_input("工时", value=float(curr_task['std_time']))
-                        e_status = st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(curr_task['status']))
+                        
+                        all_status = ["待领取", "进行中", "待验收", "完成", "返工"]
+                        current_status_idx = 0
+                        if curr_task['status'] in all_status:
+                            current_status_idx = all_status.index(curr_task['status'])
+                        e_status = st.selectbox("状态", all_status, index=current_status_idx)
+                        
                         e_assignee = st.text_input("执行人", curr_task['assignee'])
                         
                         col_save, col_del = st.columns([1,5])
@@ -317,8 +335,8 @@ elif choice == "📋 任务大厅":
             for i, r in pool.iterrows():
                 val = round(r['difficulty'] * r['std_time'], 2)
                 with st.expander(f"💰 {val} | {r['title']}"):
-                    st.write(f"详情: {r['description']}")
-                    st.write(f"截止: {r['deadline']}")
+                    st.write(f"详情: {r.get('description', '')}")
+                    st.write(f"截止: {r.get('deadline', '')}")
                     if role != 'admin':
                         if st.button(f"⚡️ 抢单", key=f"take_{r['id']}"):
                             supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(r['id'])).execute()
@@ -338,8 +356,12 @@ elif choice == "📋 任务大厅":
         
         if not active_display.empty:
             # 简化显示列
+            cols_to_show = ['title', 'assignee', 'status', 'deadline', 'difficulty']
+            # 确保列存在
+            final_cols = [c for c in cols_to_show if c in active_display.columns]
+            
             st.dataframe(
-                active_display[['title', 'assignee', 'status', 'deadline', 'difficulty']], 
+                active_display[final_cols], 
                 use_container_width=True,
                 hide_index=True
             )
@@ -355,7 +377,11 @@ elif choice == "📋 任务大厅":
         if not done.empty:
             # 计算实际获得
             done['YVP'] = done['difficulty'] * done['std_time'] * done['quality']
-            st.dataframe(done[['title', 'assignee', 'completed_at', 'YVP', 'feedback']], use_container_width=True)
+            
+            cols_to_show = ['title', 'assignee', 'completed_at', 'YVP', 'feedback']
+            final_cols = [c for c in cols_to_show if c in done.columns]
+            
+            st.dataframe(done[final_cols], use_container_width=True)
 
 # ================= 👤 我的任务 =================
 elif choice == "👤 我的任务":
@@ -368,7 +394,7 @@ elif choice == "👤 我的任务":
                 with st.container(border=True):
                     c1, c2 = st.columns([3, 1])
                     c1.write(f"**{r['title']}**")
-                    c1.caption(f"截止: {r['deadline']}")
+                    c1.caption(f"截止: {r.get('deadline', '')}")
                     if c2.button("✅ 提交验收", key=r['id']):
                         supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
                         st.success("已提交！")
