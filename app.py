@@ -9,13 +9,13 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V19.0",
+    page_title="颜祖美学·执行中枢 V19.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 隐藏多余元素 + 滚动公告栏样式
+# 样式优化
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -35,7 +35,6 @@ st.markdown("""
             border: 1px solid #dee2e6;
         }
         
-        /* 滚动公告栏样式 */
         .scrolling-text {
             width: 100%;
             background-color: #fff3cd;
@@ -60,7 +59,7 @@ except Exception:
 
 # --- 3. Cookie 管理 ---
 def get_manager():
-    return stx.CookieManager(key="yanzu_cookie_handler_v19")
+    return stx.CookieManager(key="yanzu_cookie_handler_v19_1")
 cookie_manager = get_manager()
 
 # --- 4. 核心工具 ---
@@ -77,23 +76,18 @@ def run_query(table_name):
         return pd.DataFrame()
 
 def get_announcement():
-    """获取最新公告 (利用 messages 表的特殊用户 __NOTICE__)"""
     try:
         res = supabase.table("messages").select("content").eq("username", "__NOTICE__").order("created_at", desc=True).limit(1).execute()
-        if res.data:
-            return res.data[0]['content']
+        if res.data: return res.data[0]['content']
         return "欢迎来到颜祖美学执行中枢！"
     except:
-        return "系统公告加载中..."
+        return "公告加载中..."
 
 def update_announcement(text):
-    """更新公告"""
-    # 先删除旧的，保持只有一条最新，或者直接插入新的
     supabase.table("messages").delete().eq("username", "__NOTICE__").execute()
     supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": str(datetime.datetime.now())}).execute()
 
 def calculate_net_yvp(username, days_lookback=None):
-    # 如果是管理员，直接返回 0
     if check_is_admin(username): return 0.0
 
     tasks = run_query("tasks")
@@ -127,13 +121,17 @@ def calculate_net_yvp(username, days_lookback=None):
     return round(gross, 2) if days_lookback else round(gross - total_fine, 2)
 
 def check_is_admin(username):
-    # 简单查表或缓存
     users = run_query("users")
     if not users.empty:
         u = users[users['username']==username]
-        if not u.empty and u.iloc[0]['role'] == 'admin':
-            return True
+        if not u.empty and u.iloc[0]['role'] == 'admin': return True
     return False
+
+def format_deadline(d_val):
+    """格式化截止日期显示"""
+    if pd.isna(d_val) or str(d_val) == 'NaT' or not d_val:
+        return "♾️ 无期限"
+    return f"{d_val}"
 
 QUOTES = ["管理者的跃升，是从'对任务负责'到'对目标负责'。", "没有执行力，一切战略都是空谈。", "不要假装努力，结果不会陪你演戏。"]
 ENCOURAGEMENTS = ["🔥 哪怕是一颗螺丝钉，也要拧得比别人紧！", "🚀 相信你的能力，这个任务非你莫属！", "💪 干就完了！期待你的完美交付。"]
@@ -189,26 +187,21 @@ if st.session_state.user is None:
 user = st.session_state.user
 role = st.session_state.role
 
-# 6.1 滚动公告栏 (Feature 3)
+# 公告
 announcement = get_announcement()
-st.markdown(f"""
-<div class="scrolling-text">
-    <marquee scrollamount="6" direction="left">🔔 公告：{announcement}</marquee>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6" direction="left">🔔 公告：{announcement}</marquee></div>""", unsafe_allow_html=True)
 
 st.title(f"🏛️ 颜祖帝国 ({user})")
 
-# 6.2 导航
+# 导航
 nav_options = ["📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"]
 nav = st.radio("NAV", nav_options, horizontal=True, label_visibility="collapsed")
 st.divider()
 
-# 6.3 侧边栏
+# 侧边栏
 with st.sidebar:
     st.header(f"👤 {user}")
     st.caption("👑 最高指挥官" if role == 'admin' else "⚔️ 核心成员")
-    
     if role == 'admin':
         st.info("您是管理员，您的任务对全员可见，但不计入积分。")
     else:
@@ -216,7 +209,6 @@ with st.sidebar:
         yvp_all = calculate_net_yvp(user, None)
         st.metric("本周产出", yvp_7)
         st.metric("总净资产", yvp_all)
-    
     st.divider()
     if st.button("注销退出"):
         cookie_manager.delete("yanzu_user")
@@ -241,9 +233,10 @@ if nav == "📋 任务大厅":
                 with cols[i % 3]:
                     with st.container(border=True):
                         st.markdown(f"**{row['title']}**")
-                        # Feature 1: 显示难度和工时
+                        # 截止日期显示优化
+                        d_str = format_deadline(row.get('deadline'))
+                        st.caption(f"📅 截止: **{d_str}**")
                         st.markdown(f"⚙️ 难度: **{row['difficulty']}** | ⏱️ 工时: **{row['std_time']}**")
-                        st.caption(f"💰 预估金币: {round(row['difficulty']*row['std_time'], 2)}")
                         st.text(row.get('description', '')[:40]+"...")
                         
                         if st.button("⚡️ 抢单", key=f"grab_{row['id']}", type="primary"):
@@ -263,8 +256,10 @@ if nav == "📋 任务大厅":
         if not t_df.empty:
             active = t_df[t_df['status'].isin(['进行中', '返工', '待验收'])]
             if not active.empty:
-                # 简单列出
-                st.dataframe(active[['title', 'assignee', 'status']], use_container_width=True, hide_index=True)
+                # 增加截止时间显示
+                active_display = active.copy()
+                active_display['Deadline'] = active_display['deadline'].apply(format_deadline)
+                st.dataframe(active_display[['title', 'assignee', 'status', 'Deadline']], use_container_width=True, hide_index=True)
             else:
                 st.caption("全军休整中")
     with c2:
@@ -272,7 +267,6 @@ if nav == "📋 任务大厅":
         if not t_df.empty:
             done = t_df[t_df['status']=='完成'].sort_values('completed_at', ascending=False).head(20)
             if not done.empty:
-                # Feature 1: 已完成任务显示 D/T/Q
                 done_display = done.copy()
                 done_display['Params'] = done_display.apply(lambda x: f"D{x['difficulty']} / T{x['std_time']} / Q{x['quality']}", axis=1)
                 st.dataframe(done_display[['title', 'assignee', 'Params']], use_container_width=True, hide_index=True)
@@ -289,7 +283,6 @@ elif nav == "🗣️ 颜祖广场":
                 st.rerun()
     
     msgs = run_query("messages")
-    # 过滤掉公告
     msgs = msgs[msgs['username'] != '__NOTICE__']
     if not msgs.empty:
         msgs = msgs.sort_values("created_at", ascending=False)
@@ -321,26 +314,31 @@ elif nav == "🏰 个人中心":
     # --- 管理员 ---
     if role == 'admin':
         st.header("👑 统帅控制台")
-        # Feature 2: 增加“随手记”Tab
-        adm_tabs = st.tabs(["⚡️ 随手记(Admin)", "🚀 发布", "🛠️ 管理", "⚖️ 裁决", "📢 公告", "👥 成员", "💾 备份"])
+        adm_tabs = st.tabs(["⚡️ 随手记", "🚀 发布", "🛠️ 管理", "⚖️ 裁决", "📢 公告", "👥 成员", "💾 备份"])
         
-        with adm_tabs[0]: # Feature 2: 简化自我派发
+        with adm_tabs[0]: 
             st.info("⚡️ 这里的任务直接派给自己，不计积分，无需填难度，完成后直接归档。")
             q_title = st.text_input("任务内容", key="q_title")
             q_desc = st.text_area("备注", key="q_desc")
+            # 随手记也不设截止
             if st.button("⚡️ 立即创建", type="primary"):
                 supabase.table("tasks").insert({
-                    "title": q_title, "description": q_desc, 
-                    "difficulty": 0, "std_time": 0, # 不计分
-                    "status": "进行中", "assignee": user, 
-                    "type": "AdminSelf", "feedback": "统帅自派"
+                    "title": q_title, "description": q_desc, "difficulty": 0, "std_time": 0,
+                    "status": "进行中", "assignee": user, "type": "AdminSelf", "feedback": "统帅自派"
                 }).execute()
                 st.success("已创建")
                 
-        with adm_tabs[1]: # 发布
+        with adm_tabs[1]: # 发布 (新增：无截止选项)
             c1, c2 = st.columns(2)
             title = c1.text_input("任务名称")
-            dead = c1.date_input("截止")
+            
+            # 截止日期与“无期限”选项
+            col_date, col_check = c1.columns([3, 2])
+            dead_input = col_date.date_input("截止日期")
+            no_deadline = col_check.checkbox("♾️ 无截止时间", help("勾选后，该任务将不设期限"))
+            
+            final_deadline = None if no_deadline else str(dead_input)
+            
             desc = st.text_area("详情")
             diff = c2.number_input("难度", min_value=0.0, max_value=99.0, value=1.0, step=0.1)
             stdt = c2.number_input("工时", min_value=0.0, max_value=99.0, value=1.0, step=0.5)
@@ -349,7 +347,7 @@ elif nav == "🏰 个人中心":
             if ttype == "指定指派":
                 udf = run_query("users")
                 if not udf.empty:
-                    ms = udf['username'].tolist() # 管理员也可选自己
+                    ms = udf['username'].tolist()
                     assignee = st.selectbox("指派给", ms)
             
             with st.popover("🚀 确认发布"):
@@ -357,7 +355,11 @@ elif nav == "🏰 个人中心":
                 if st.button("确定发布", type="primary"):
                     s = "待领取" if ttype=="公共任务池" else "进行中"
                     a = assignee if ttype=="指定指派" else "待定"
-                    supabase.table("tasks").insert({"title": title, "description": desc, "difficulty": diff, "std_time": stdt, "status": s, "assignee": a, "deadline": str(dead), "type": ttype, "feedback": ""}).execute()
+                    supabase.table("tasks").insert({
+                        "title": title, "description": desc, "difficulty": diff, "std_time": stdt, 
+                        "status": s, "assignee": a, "deadline": final_deadline, 
+                        "type": ttype, "feedback": ""
+                    }).execute()
                     st.success("已发布")
 
         with adm_tabs[2]: # 管理
@@ -385,7 +387,6 @@ elif nav == "🏰 个人中心":
             if not pend.empty:
                 pid = st.selectbox("待审", pend['id'], format_func=lambda x: f"{pend[pend['id']==x]['title'].values[0]}")
                 pinfo = pend[pend['id']==pid].iloc[0]
-                # Feature 1: 显示参数
                 st.caption(f"执行人: {pinfo['assignee']} | 难度: {pinfo['difficulty']} | 工时: {pinfo['std_time']}")
                 
                 with st.container(border=True):
@@ -399,14 +400,14 @@ elif nav == "🏰 个人中心":
             else:
                 st.info("无待审")
         
-        with adm_tabs[4]: # 公告 (Feature 3)
-            st.subheader("📢 滚动公告设置")
+        with adm_tabs[4]: # 公告
+            st.subheader("📢 滚动公告")
             curr_notice = get_announcement()
             st.write(f"当前: {curr_notice}")
             new_notice = st.text_input("新公告内容")
             if st.button("更新公告"):
                 update_announcement(new_notice)
-                st.success("公告已更新，刷新可见"); st.rerun()
+                st.success("已更新"); st.rerun()
 
         with adm_tabs[5]: # 成员
             udf = run_query("users")
@@ -440,35 +441,32 @@ elif nav == "🏰 个人中心":
             if uf:
                 with st.popover("危险：确认恢复"):
                     if st.button("确认覆盖"):
-                        # ... (恢复逻辑同V18, 略去重复代码以节省篇幅，功能保持一致) ...
                         st.info("请联系技术支持(API限制防误触)") 
 
-    # --- 普通成员视图 (含管理员个人战场) ---
+    # --- 普通成员视图 ---
     else:
         st.header("⚔️ 我的战场")
         
-        # Feature 1: 强提醒 (刚被评分)
-        # 逻辑：检查是否有任务状态为'完成'且feedback不为空，且时间是最近的
-        # 为了简单有效，直接查今日完成的任务
+        # 强提醒
         tdf = run_query("tasks")
         if not tdf.empty:
-            # 只有非管理员才需要这个强提醒
             if role != 'admin':
                 today_done = tdf[(tdf['assignee']==user) & (tdf['status']=='完成') & (tdf['completed_at'] == datetime.date.today())]
                 if not today_done.empty:
                     st.info(f"🔔 喜报！您有 {len(today_done)} 个任务今日已被验收评分！请查看下方历史记录。")
 
-            # 进行中
             my = tdf[(tdf['assignee']==user) & (tdf['status']=='进行中')]
             if not my.empty:
                 for i, r in my.iterrows():
                     with st.container(border=True):
                         st.markdown(f"**{r['title']}**")
-                        # Feature 1: 显示参数
+                        # 新增：截止时间显示 (Feature 1)
+                        d_show = format_deadline(r.get('deadline'))
+                        st.caption(f"📅 截止: **{d_show}**")
+                        
                         st.caption(f"⚙️ 难度: {r['difficulty']} | ⏱️ 工时: {r['std_time']}")
                         st.text(r.get('description', ''))
                         
-                        # Feature 2: 管理员直接完成，不进待验收
                         if role == 'admin':
                             if st.button("✅ 归档 (Admin)", key=f"adm_done_{r['id']}", type="primary"):
                                 supabase.table("tasks").update({"status": "完成", "quality": 1.0, "completed_at": str(datetime.date.today()), "feedback": "统帅自决"}).eq("id", int(r['id'])).execute()
