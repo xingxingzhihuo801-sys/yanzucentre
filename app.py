@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V25.0",
+    page_title="颜祖美学·执行中枢 V26.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -55,7 +55,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v25_hist_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v26_id_fix_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -166,55 +166,32 @@ def format_deadline(d_val):
     return str(d_val)
 
 def show_task_history(username, role):
-    """显示任务历史与过滤器模块"""
     st.divider()
     st.subheader("📜 任务历史档案")
-    
     df = run_query("tasks")
     if df.empty:
         st.info("暂无数据")
         return
-
-    # 筛选已完成任务
     my_history = df[(df['assignee'] == username) & (df['status'] == '完成')].copy()
-    
     if my_history.empty:
         st.info("暂无已完成的任务记录")
     else:
-        # 生成月份列用于筛选
         my_history['completed_at'] = pd.to_datetime(my_history['completed_at'])
         my_history['Month'] = my_history['completed_at'].dt.strftime('%Y-%m')
-        
-        # 筛选器
         c_search, c_filter = st.columns(2)
         search_kw = c_search.text_input("🔍 搜索任务标题", key=f"hist_search_{username}")
-        
         month_list = ["全部"] + sorted(my_history['Month'].unique().tolist(), reverse=True)
         month_sel = c_filter.selectbox("🗓️ 按月份筛选", month_list, key=f"hist_filter_{username}")
-        
-        # 执行筛选
         filtered_df = my_history.copy()
-        if month_sel != "全部":
-            filtered_df = filtered_df[filtered_df['Month'] == month_sel]
-        if search_kw:
-            filtered_df = filtered_df[filtered_df['title'].str.contains(search_kw, case=False, na=False)]
-            
-        # 展示
+        if month_sel != "全部": filtered_df = filtered_df[filtered_df['Month'] == month_sel]
+        if search_kw: filtered_df = filtered_df[filtered_df['title'].str.contains(search_kw, case=False, na=False)]
         if not filtered_df.empty:
             filtered_df['Deadline'] = filtered_df['deadline'].apply(format_deadline)
-            # 格式化日期显示
             filtered_df['Completed'] = filtered_df['completed_at'].dt.date
-            
-            # 简化展示列
             cols_show = ['title', 'Completed', 'difficulty', 'std_time', 'quality']
-            st.dataframe(
-                filtered_df[cols_show].sort_values("Completed", ascending=False), 
-                use_container_width=True, 
-                hide_index=True
-            )
+            st.dataframe(filtered_df[cols_show].sort_values("Completed", ascending=False), use_container_width=True, hide_index=True)
             st.caption(f"共找到 {len(filtered_df)} 条记录")
-        else:
-            st.info("未找到符合条件的记录")
+        else: st.info("未找到符合条件的记录")
 
 QUOTES = ["管理者的跃升，是从'对任务负责'到'对目标负责'。", "没有执行力，一切战略都是空谈。", "不要假装努力，结果不会陪你演戏。"]
 ENCOURAGEMENTS = ["🔥 哪怕是一颗螺丝钉，也要拧得比别人紧！", "🚀 相信你的能力，这个任务非你莫属！", "💪 干就完了！期待你的完美交付。"]
@@ -382,11 +359,11 @@ elif nav == "🏰 个人中心":
         with tabs[0]:
             st.info("💡 统帅自律：此处管理的任务不计积分，仅作公示与记录。")
             
-            # --- 新增：管理员快捷发布带截止日期 ---
+            # --- 修复点：添加 key 避免 ID 冲突 ---
             st.subheader("⚡️ 快捷派发")
             qc1, qc2 = st.columns([3, 1])
-            quick_t = qc1.text_input("任务内容", placeholder="输入待办事项...")
-            quick_d = qc2.date_input("截止日期", value=None)
+            quick_t = qc1.text_input("任务内容", placeholder="输入待办事项...", key="admin_quick_task_input")
+            quick_d = qc2.date_input("截止日期", value=None, key="admin_quick_date_input")
             
             if st.button("⚡️ 立即派发给我", type="primary"):
                 dead_val = str(quick_d) if quick_d else None
@@ -399,7 +376,6 @@ elif nav == "🏰 个人中心":
 
             st.divider()
             
-            # --- 新增：管理员正在进行的任务 ---
             st.subheader("🛡️ 进行中任务")
             tdf = run_query("tasks")
             my_adm_tasks = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中')]
@@ -421,16 +397,16 @@ elif nav == "🏰 个人中心":
                                 st.success("已归档"); st.rerun()
             else:
                 st.info("暂无进行中任务")
-                
-            # --- 新增：管理员历史档案 ---
+            
+            # 历史记录 (V25)
             show_task_history(user, role)
 
         with tabs[1]: 
             st.subheader("💰 周期分润统计")
             st.info("选择时间段，系统将计算该区间内的产出，并自动扣除区间内产生的罚款。")
             c_d1, c_d2 = st.columns(2)
-            d_start = c_d1.date_input("开始日期", value=datetime.date.today().replace(day=1))
-            d_end = c_d2.date_input("结束日期", value=datetime.date.today())
+            d_start = c_d1.date_input("开始日期", value=datetime.date.today().replace(day=1), key="stats_d1")
+            d_end = c_d2.date_input("结束日期", value=datetime.date.today(), key="stats_d2")
             
             if st.button("📊 开始统计", type="primary"):
                 if d_start <= d_end:
@@ -444,16 +420,17 @@ elif nav == "🏰 个人中心":
         
         with tabs[2]:
             c1, c2 = st.columns(2)
-            t_name = c1.text_input("任务名称")
+            t_name = c1.text_input("任务名称", key="pub_title")
             col_d, col_c = c1.columns([3,2])
-            d_input = col_d.date_input("截止日期")
-            no_d = col_c.checkbox("无截止日期")
-            diff = c2.number_input("难度 (0-99)", value=1.0, step=0.1)
-            stdt = c2.number_input("工时 (0-99)", value=1.0, step=0.5)
-            ttype = c2.radio("派发模式", ["公共任务池", "指派成员"], horizontal=True)
+            # --- 修复点：添加 key ---
+            d_input = col_d.date_input("截止日期", key="pub_dead_input")
+            no_d = col_c.checkbox("无截止日期", key="pub_no_dead")
+            diff = c2.number_input("难度 (0-99)", value=1.0, step=0.1, key="pub_diff")
+            stdt = c2.number_input("工时 (0-99)", value=1.0, step=0.5, key="pub_stdt")
+            ttype = c2.radio("派发模式", ["公共任务池", "指派成员"], horizontal=True, key="pub_type")
             assign = "待定"
             udf = run_query("users")
-            if ttype == "指派成员": assign = st.selectbox("指派给", udf['username'].tolist())
+            if ttype == "指派成员": assign = st.selectbox("指派给", udf['username'].tolist(), key="pub_assignee")
             if st.button("🚀 确认发布", type="primary"):
                 final_d = None if no_d else str(d_input)
                 supabase.table("tasks").insert({"title": t_name, "difficulty": diff, "std_time": stdt, "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign if ttype=="指派成员" else "待定", "deadline": final_d, "type": ttype}).execute()
@@ -464,8 +441,8 @@ elif nav == "🏰 个人中心":
             tdf = run_query("tasks"); udf = run_query("users")
             if not tdf.empty:
                 c_f1, c_f2 = st.columns(2)
-                f_u = c_f1.selectbox("筛选人员", ["全部"] + list(udf['username'].unique()))
-                s_k = c_f2.text_input("搜标题")
+                f_u = c_f1.selectbox("筛选人员", ["全部"] + list(udf['username'].unique()), key="mng_filter_u")
+                s_k = c_f2.text_input("搜标题", key="mng_search_t")
                 filtered = tdf.copy()
                 if f_u != "全部": filtered = filtered[filtered['assignee'] == f_u]
                 if s_k: filtered = filtered[filtered['title'].str.contains(s_k, case=False, na=False)]
@@ -482,6 +459,8 @@ elif nav == "🏰 个人中心":
                         c_dead_1, c_dead_2 = st.columns([3, 2])
                         curr_d = target.get('deadline')
                         is_null_d = pd.isna(curr_d) or str(curr_d) in ['None', 'NaT', '']
+                        
+                        # 使用 ID 相关的 key
                         new_no_dead = c_dead_2.checkbox("无截止日期", value=is_null_d, key=f"dead_chk_{sel_id}")
                         default_d = datetime.date.today()
                         if not is_null_d: default_d = curr_d
@@ -539,6 +518,7 @@ elif nav == "🏰 个人中心":
             buf.write("\n===PENALTIES===\n"); d3.to_csv(buf, index=False)
             buf.write("\n===MESSAGES===\n"); d4.to_csv(buf, index=False)
             st.download_button("📥 下载备份", buf.getvalue(), f"backup_{datetime.date.today()}.txt")
+            
             st.divider()
             up_f = st.file_uploader("上传备份文件 (.txt)", type=['txt'])
             if up_f:
@@ -579,7 +559,7 @@ elif nav == "🏰 个人中心":
                         st.success("已提交交付"); st.rerun()
         else: st.info("暂无任务，前往大厅看看吧。")
         
-        # --- 新增：普通成员任务历史 ---
+        # 任务历史 (V25)
         show_task_history(user, role)
         
         st.divider()
