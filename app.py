@@ -7,35 +7,37 @@ import random
 import extra_streamlit_components as stx
 from supabase import create_client, Client
 
-# --- 1. 系统基础配置 ---
+# --- 1. 系统配置与 CSS 隐身术 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V17.0",
+    page_title="颜祖美学·执行中枢 V18.0",
     page_icon="🏛️",
     layout="wide",
-    initial_sidebar_state="collapsed" # 默认收起侧边栏，因为我们现在用顶部导航
+    initial_sidebar_state="collapsed"
 )
 
-# CSS 修复：不再隐藏 Header，防止菜单按钮消失
-# 改为仅隐藏右上角的汉堡菜单和页脚，保留核心功能区
+# 强力隐藏所有不必要的 Streamlit 原生元素 (包括右下角 Manage App)
 st.markdown("""
     <style>
+        /* 隐藏顶部汉堡菜单 */
         #MainMenu {visibility: hidden;}
+        /* 隐藏顶部 Header 装饰条 */
+        header {visibility: hidden;}
+        /* 隐藏底部 Footer */
         footer {visibility: hidden;}
-        /* 优化顶部导航栏样式 */
+        /* 隐藏右下角 'Manage App' 按钮 (核心安全代码) */
+        .stDeployButton {display:none;}
+        div[data-testid="stToolbar"] {visibility: hidden;}
+        div[data-testid="stDecoration"] {visibility: hidden;}
+        div[data-testid="stStatusWidget"] {visibility: hidden;}
+        
+        /* 优化顶部导航栏 */
         div[data-testid="stRadio"] > div {
-            flex-direction: row; /* 强制横向排列 */
-            justify-content: center; /* 居中 */
-            gap: 20px;
-            background-color: #f0f2f6;
+            flex-direction: row;
+            justify-content: center;
+            background-color: #f8f9fa;
             padding: 10px;
-            border-radius: 10px;
-        }
-        /* 手机端适配 */
-        @media (max-width: 640px) {
-            div[data-testid="stRadio"] > div {
-                flex-direction: column; /* 手机上竖向防止挤压，或者保持横向但允许滚动 */
-                gap: 5px;
-            }
+            border-radius: 8px;
+            border: 1px solid #dee2e6;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -49,8 +51,16 @@ except Exception:
     st.error("🚨 致命错误：数据库连接失败，请检查配置文件。")
     st.stop()
 
-# --- 3. 核心工具函数 ---
-@st.cache_data(ttl=5)
+# --- 3. Cookie 管理器 (修复 DuplicateKey Bug 的关键) ---
+# 必须在所有逻辑之前初始化，且 key 必须固定
+def get_manager():
+    return stx.CookieManager(key="yanzu_cookie_handler")
+
+cookie_manager = get_manager()
+
+# --- 4. 核心工具函数 ---
+
+@st.cache_data(ttl=3) # 缩短缓存时间以保证实时性
 def run_query(table_name):
     """通用查表"""
     try:
@@ -63,17 +73,37 @@ def run_query(table_name):
     except:
         return pd.DataFrame()
 
+def get_user_role(username):
+    """获取用户角色"""
+    if not username: return "member"
+    users = run_query("users")
+    if not users.empty:
+        u = users[users['username'] == username]
+        if not u.empty:
+            return u.iloc[0]['role']
+    return "member"
+
 def calculate_net_yvp(username, days_lookback=None):
-    """军规算法"""
+    """
+    核心算法 V18：
+    1. 管理员不产生积分 (返回 0)
+    2. 普通成员：产出 - 罚款
+    """
+    # 如果是管理员，直接返回 0 (Feature 1)
+    if get_user_role(username) == 'admin':
+        return 0.0
+
     tasks = run_query("tasks")
     if tasks.empty: return 0.0
     
+    # 筛选该用户已完成
     my_done = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
     if my_done.empty: return 0.0
     
     my_done['val'] = my_done['difficulty'] * my_done['std_time'] * my_done['quality']
     my_done['completed_at'] = pd.to_datetime(my_done['completed_at'])
 
+    # 1. 计算产出
     view_df = my_done.copy()
     if days_lookback:
         cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
@@ -81,6 +111,7 @@ def calculate_net_yvp(username, days_lookback=None):
     
     gross = view_df['val'].sum()
 
+    # 2. 计算罚款 (仅在计算总资产时扣除)
     total_fine = 0.0
     if days_lookback is None: 
         penalties = run_query("penalties")
@@ -93,46 +124,57 @@ def calculate_net_yvp(username, days_lookback=None):
                     w_tasks = my_done[(my_done['completed_at'] >= w_start) & (my_done['completed_at'] <= pen['occurred_at'])]
                     total_fine += w_tasks['val'].sum() * 0.2
 
-    return round(gross, 2) if days_lookback else round(gross - total_fine, 2)
+    if days_lookback:
+        return round(gross, 2)
+    else:
+        return round(gross - total_fine, 2)
 
 QUOTES = ["管理者的跃升，是从'对任务负责'到'对目标负责'。", "没有执行力，一切战略都是空谈。", "不要假装努力，结果不会陪你演戏。"]
 ENCOURAGEMENTS = ["🔥 哪怕是一颗螺丝钉，也要拧得比别人紧！", "🚀 相信你的能力，这个任务非你莫属！", "💪 干就完了！期待你的完美交付。"]
 
-# --- 4. 登录与状态管理 ---
-def get_manager(): return stx.CookieManager()
-cookie_manager = get_manager()
+# --- 5. 鉴权逻辑 (修复登录 Bug) ---
 
+# 检查 Session
 if 'user' not in st.session_state:
-    time.sleep(0.1) # 等待 Cookie 加载
-    cookie_user = cookie_manager.get(cookie="yanzu_user")
-    cookie_role = cookie_manager.get(cookie="yanzu_role")
+    st.session_state.user = None
+    st.session_state.role = None
+
+# 尝试 Cookie 登录
+if st.session_state.user is None:
+    # 稍微延迟确保 CookieManager 加载
+    time.sleep(0.1) 
+    c_user = cookie_manager.get("yanzu_user")
+    c_role = cookie_manager.get("yanzu_role")
     
-    if cookie_user and cookie_role:
-        st.session_state.user = cookie_user
-        st.session_state.role = cookie_role
+    if c_user and c_role:
+        st.session_state.user = c_user
+        st.session_state.role = c_role
         st.rerun()
-    
+
+# 如果还是没登录，显示登录页
+if st.session_state.user is None:
     st.title("🏛️ 颜祖美学·执行中枢")
     st.info(f"🔥 {random.choice(QUOTES)}")
     
     c1, c2 = st.columns(2)
     with c1:
-        with st.form("login"):
+        with st.form("login_form"):
             u = st.text_input("用户名")
             p = st.text_input("密码", type="password")
-            if st.form_submit_button("🚀 登录"):
+            if st.form_submit_button("🚀 登录", type="primary"):
                 res = supabase.table("users").select("*").eq("username", u).eq("password", p).execute()
                 if res.data:
                     role = res.data[0]['role']
                     st.session_state.user = u
                     st.session_state.role = role
+                    # 设置 Cookie
                     cookie_manager.set("yanzu_user", u, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
                     cookie_manager.set("yanzu_role", role, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
-                    st.success("登录成功")
+                    st.success("欢迎回来")
                     time.sleep(0.5)
                     st.rerun()
                 else:
-                    st.error("验证失败")
+                    st.error("密码错误")
     with c2:
         with st.expander("新兵注册"):
             nu = st.text_input("用户名")
@@ -140,93 +182,99 @@ if 'user' not in st.session_state:
             if st.button("注册"):
                 try:
                     supabase.table("users").insert({"username": nu, "password": np, "role": "member"}).execute()
-                    st.success("注册成功！请登录。")
+                    st.success("注册成功！")
                 except:
                     st.warning("用户已存在")
     st.stop()
 
+# --- 6. 登录后界面 ---
 user = st.session_state.user
 role = st.session_state.role
 
-# --- 5. 顶部核心导航栏 (关键修复：不再依赖侧边栏) ---
+# 顶部导航
 st.title(f"🏛️ 颜祖帝国 ({user})")
-
-# 顶部菜单：所有核心入口直接展示
 nav_options = ["📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"]
-# 使用 horizontal=True 让单选按钮变成横向导航条
-nav = st.radio("系统导航", nav_options, horizontal=True, label_visibility="collapsed")
+nav = st.radio("MAIN_NAV", nav_options, horizontal=True, label_visibility="collapsed")
 
 st.divider()
 
-# --- 6. 侧边栏：仅作为辅助信息区 ---
+# 侧边栏
 with st.sidebar:
     st.header(f"👤 {user}")
     st.caption("👑 最高指挥官" if role == 'admin' else "⚔️ 核心成员")
     
-    # 简报
-    yvp_7 = calculate_net_yvp(user, 7)
-    yvp_all = calculate_net_yvp(user, None)
-    st.metric("本周产出", yvp_7)
-    st.metric("总净资产", yvp_all)
+    # 战绩 (管理员不显示数值，显示身份)
+    if role == 'admin':
+        st.info("您是管理员，您的任务不计入YVP，但对全员可见。")
+    else:
+        yvp_7 = calculate_net_yvp(user, 7)
+        yvp_all = calculate_net_yvp(user, None)
+        st.metric("本周产出", yvp_7)
+        st.metric("总净资产", yvp_all)
     
     st.divider()
+    
+    # 修复注销 Bug：使用 Session 状态清理而非直接 delete
     if st.button("注销退出"):
+        # 1. 清除 Cookie
         cookie_manager.delete("yanzu_user")
         cookie_manager.delete("yanzu_role")
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
+        # 2. 清除 Session
+        st.session_state.user = None
+        st.session_state.role = None
+        # 3. 强制刷新
+        time.sleep(0.5)
         st.rerun()
-
-# --- 7. 页面路由 ---
 
 # ================= 📋 任务大厅 =================
 if nav == "📋 任务大厅":
     st.header("🛡️ 任务大厅")
+    
     t_df = run_query("tasks")
     
-    # 抢单区
+    # 1. 抢单区
     st.subheader("🔥 待抢任务")
     if not t_df.empty:
         pool = t_df[(t_df['status']=='待领取') & (t_df['type']=='公共任务池')]
         if not pool.empty:
-            # 响应式布局：每行显示几个卡片
             cols = st.columns(3)
             for i, (idx, row) in enumerate(pool.iterrows()):
                 with cols[i % 3]:
                     with st.container(border=True):
                         st.markdown(f"**{row['title']}**")
+                        # Feature 2: 0-99 都可以
                         st.caption(f"💰 {round(row['difficulty']*row['std_time'], 2)} | 难度 {row['difficulty']}")
                         st.text(row.get('description', '')[:40]+"...")
                         
-                        if role != 'admin':
-                            if st.button("⚡️ 抢单", key=f"grab_{row['id']}", type="primary"):
-                                supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(row['id'])).execute()
-                                st.toast(random.choice(ENCOURAGEMENTS), icon="🔥")
-                                time.sleep(1)
-                                st.rerun()
-                        else:
-                            st.button("🔒 监视中", key=f"lk_{row['id']}", disabled=True)
+                        # Feature 1: 管理员也能抢单
+                        if st.button("⚡️ 抢单", key=f"grab_{row['id']}", type="primary"):
+                            supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(row['id'])).execute()
+                            st.toast(random.choice(ENCOURAGEMENTS), icon="🔥")
+                            time.sleep(1)
+                            st.rerun()
         else:
             st.info("公共池空闲中")
     
     st.divider()
-    # 全军看板
+    
+    # 2. 全军看板 (含管理员任务)
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("🔭 全军动态")
         if not t_df.empty:
             active = t_df[t_df['status'].isin(['进行中', '返工', '待验收'])]
             if not active.empty:
+                # 简单展示，不区分管理员
                 st.dataframe(active[['title', 'assignee', 'status']], use_container_width=True, hide_index=True)
             else:
                 st.caption("全军休整中")
     with c2:
         st.subheader("📜 荣誉榜")
         if not t_df.empty:
-            done = t_df[t_df['status']=='完成'].sort_values('completed_at', ascending=False).head(10)
+            done = t_df[t_df['status']=='完成'].sort_values('completed_at', ascending=False).head(20)
             if not done.empty:
-                done['YVP'] = done['difficulty'] * done['std_time'] * done['quality']
-                st.dataframe(done[['title', 'assignee', 'YVP']], use_container_width=True, hide_index=True)
+                # 即使是管理员的任务，也显示在这里，只是不算分
+                st.dataframe(done[['title', 'assignee', 'completed_at']], use_container_width=True, hide_index=True)
 
 # ================= 🗣️ 颜祖广场 =================
 elif nav == "🗣️ 颜祖广场":
@@ -252,7 +300,9 @@ elif nav == "🏆 风云榜":
     st.header("🏆 颜祖富豪榜")
     u_df = run_query("users")
     if not u_df.empty:
-        mems = u_df[u_df['role']!='admin']['username'].tolist()
+        # 只统计 member，管理员不参与排名 (Feature 1)
+        mems = u_df[u_df['role'] != 'admin']['username'].tolist()
+        
         def get_rank(lookback):
             d = []
             for m in mems:
@@ -267,30 +317,38 @@ elif nav == "🏆 风云榜":
 
 # ================= 🏰 个人中心 =================
 elif nav == "🏰 个人中心":
-    # --- 管理员视图 ---
+    
+    # ------------------ 管理员视图 ------------------
     if role == 'admin':
         st.header("👑 统帅控制台")
-        adm_tabs = st.tabs(["🚀 发布", "🛠️ 管理", "⚖️ 裁决", "👥 成员", "💾 备份"])
+        adm_tabs = st.tabs(["🚀 发布", "🛠️ 管理", "⚖️ 裁决", "👥 成员", "💾 数据恢复"])
         
         with adm_tabs[0]: # 发布
             c1, c2 = st.columns(2)
             title = c1.text_input("任务名称")
             dead = c1.date_input("截止")
             desc = st.text_area("详情")
-            diff = c2.number_input("难度", 1.0, step=0.1)
-            stdt = c2.number_input("工时", 1.0, step=0.5)
+            # Feature 2: 0-99
+            diff = c2.number_input("难度", min_value=0.0, max_value=99.0, value=1.0, step=0.1)
+            stdt = c2.number_input("工时", min_value=0.0, max_value=99.0, value=1.0, step=0.5)
             ttype = c2.radio("类型", ["公共任务池", "指定指派"], horizontal=True)
+            
             assignee = "待定"
             if ttype == "指定指派":
                 udf = run_query("users")
                 if not udf.empty:
-                    ms = udf[udf['role']!='admin']['username'].tolist()
-                    assignee = st.selectbox("指派给", ms)
-            if st.button("发布", type="primary"):
-                s = "待领取" if ttype=="公共任务池" else "进行中"
-                a = assignee if ttype=="指定指派" else "待定"
-                supabase.table("tasks").insert({"title": title, "description": desc, "difficulty": diff, "std_time": stdt, "status": s, "assignee": a, "deadline": str(dead), "type": ttype, "feedback": ""}).execute()
-                st.success("已发布")
+                    # Feature 1: 管理员也可以给自己派活，所以下拉列表包含 admin
+                    all_users = udf['username'].tolist()
+                    assignee = st.selectbox("指派给", all_users)
+            
+            # Feature 6: 防误触确认
+            with st.popover("🚀 确认发布"):
+                st.write("确认所有信息无误？")
+                if st.button("确定发布", type="primary"):
+                    s = "待领取" if ttype=="公共任务池" else "进行中"
+                    a = assignee if ttype=="指定指派" else "待定"
+                    supabase.table("tasks").insert({"title": title, "description": desc, "difficulty": diff, "std_time": stdt, "status": s, "assignee": a, "deadline": str(dead), "type": ttype, "feedback": ""}).execute()
+                    st.success("已发布")
 
         with adm_tabs[1]: # 管理
             st.subheader("全局修正")
@@ -310,9 +368,13 @@ elif nav == "🏰 个人中心":
                             supabase.table("tasks").update({"title": e_t, "status": e_s, "quality": e_q}).eq("id", int(tid)).execute()
                             st.success("OK")
                             st.rerun()
-                        if c_b2.button("删除", type="primary"):
-                            supabase.table("tasks").delete().eq("id", int(tid)).execute()
-                            st.rerun()
+                        
+                        # Feature 6: 防误触删除
+                        with c_b2.popover("🗑️ 删除"):
+                            st.write("确定要永久删除此任务吗？")
+                            if st.button("确认删除", type="primary"):
+                                supabase.table("tasks").delete().eq("id", int(tid)).execute()
+                                st.rerun()
 
         with adm_tabs[2]: # 裁决
             pend = run_query("tasks")
@@ -337,9 +399,12 @@ elif nav == "🏰 个人中心":
             with st.expander("🚨 记过 (缺勤)"):
                 if not udf.empty:
                     target = st.selectbox("违规人", udf[udf['role']!='admin']['username'].tolist())
-                    if st.button("记录缺勤"):
-                        supabase.table("penalties").insert({"username": target, "occurred_at": str(datetime.date.today()), "reason": "缺勤"}).execute()
-                        st.success("已记录")
+                    # Feature 6: 防误触
+                    with st.popover("确认记过"):
+                        st.write(f"确定要给 {target} 记缺勤吗？")
+                        if st.button("确认执行"):
+                            supabase.table("penalties").insert({"username": target, "occurred_at": str(datetime.date.today()), "reason": "缺勤"}).execute()
+                            st.success("已记录")
             
             st.write("名单:")
             if not udf.empty:
@@ -350,22 +415,76 @@ elif nav == "🏰 个人中心":
                         np = c2.text_input(f"改密-{m['username']}", label_visibility="collapsed", placeholder="新密码")
                         if c2.button("重置", key=f"r{m['username']}"):
                             if np: supabase.table("users").update({"password": np}).eq("username", m['username']).execute(); st.toast("OK")
-                        if c3.button("驱逐", key=f"d{m['username']}", type="primary"):
-                            supabase.table("users").delete().eq("username", m['username']).execute(); st.rerun()
+                        
+                        # Feature 6: 防误触删除用户
+                        with c3.popover("驱逐"):
+                            st.write(f"危险！确定要删除 {m['username']} 吗？")
+                            if st.button("确认驱逐", key=f"d{m['username']}", type="primary"):
+                                supabase.table("users").delete().eq("username", m['username']).execute()
+                                st.rerun()
 
-        with adm_tabs[4]: # 备份
-            if st.button("下载全量备份"):
-                d1 = run_query("users"); d2 = run_query("tasks"); d3 = run_query("penalties"); d4 = run_query("messages")
-                b = io.StringIO()
-                b.write("===USERS===\n"); d1.to_csv(b, index=False)
-                b.write("\n===TASKS===\n"); d2.to_csv(b, index=False)
-                b.write("\n===PENALTIES===\n"); d3.to_csv(b, index=False)
-                b.write("\n===MESSAGES===\n"); d4.to_csv(b, index=False)
-                st.download_button("📥 下载", b.getvalue(), "backup.txt")
+        with adm_tabs[4]: # 备份与恢复 (Feature 5)
+            st.subheader("💾 数据时光机")
+            
+            # 下载
+            d1 = run_query("users"); d2 = run_query("tasks"); d3 = run_query("penalties"); d4 = run_query("messages")
+            b = io.StringIO()
+            b.write("===USERS===\n"); d1.to_csv(b, index=False)
+            b.write("\n===TASKS===\n"); d2.to_csv(b, index=False)
+            b.write("\n===PENALTIES===\n"); d3.to_csv(b, index=False)
+            b.write("\n===MESSAGES===\n"); d4.to_csv(b, index=False)
+            st.download_button("📥 下载备份", b.getvalue(), f"backup_{datetime.date.today()}.txt")
+            
+            st.divider()
+            
+            # 上传恢复
+            st.warning("⚠️ 警告：上传备份将覆盖当前所有数据！")
+            uf = st.file_uploader("上传备份文件 (.txt)", type=['txt'])
+            if uf:
+                with st.popover("⚠️ 确认覆盖恢复"):
+                    st.write("这会清空现有数据并写入备份数据，确定吗？")
+                    if st.button("确定执行恢复", type="primary"):
+                        try:
+                            content = uf.getvalue().decode("utf-8")
+                            # 简易解析
+                            s_users = content.split("===USERS===\n")[1].split("===TASKS===")[0].strip()
+                            s_tasks = content.split("===TASKS===\n")[1].split("===PENALTIES===")[0].strip()
+                            s_pens = content.split("===PENALTIES===\n")[1].split("===MESSAGES===")[0].strip()
+                            s_msgs = content.split("===MESSAGES===\n")[1].strip()
+                            
+                            # 清空旧数据
+                            supabase.table("users").delete().neq("username", "xxxx").execute() # 删除所有
+                            supabase.table("tasks").delete().neq("id", 0).execute()
+                            supabase.table("penalties").delete().neq("id", 0).execute()
+                            supabase.table("messages").delete().neq("id", 0).execute()
+                            
+                            # 写入新数据
+                            if s_users: 
+                                df = pd.read_csv(io.StringIO(s_users))
+                                supabase.table("users").insert(df.to_dict('records')).execute()
+                            if s_tasks: 
+                                df = pd.read_csv(io.StringIO(s_tasks))
+                                # 移除 id 以便自增，或者保留id
+                                # 这里为了安全，建议保留 ID
+                                supabase.table("tasks").insert(df.to_dict('records')).execute()
+                            if s_pens: 
+                                df = pd.read_csv(io.StringIO(s_pens))
+                                supabase.table("penalties").insert(df.to_dict('records')).execute()
+                            if s_msgs: 
+                                df = pd.read_csv(io.StringIO(s_msgs))
+                                supabase.table("messages").insert(df.to_dict('records')).execute()
+                                
+                            st.success("恢复成功！")
+                            time.sleep(2)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"恢复失败: {e}")
 
-    # --- 普通成员视图 ---
+    # ------------------ 普通成员视图 (或管理员自己的战场) ------------------
     else:
         st.header("⚔️ 我的战场")
+        
+        # 1. 我的进行中任务
         tdf = run_query("tasks")
         if not tdf.empty:
             my = tdf[(tdf['assignee']==user) & (tdf['status']=='进行中')]
@@ -379,7 +498,7 @@ elif nav == "🏰 个人中心":
                              st.success("已交付")
                              st.rerun()
             else:
-                st.info("暂无进行中任务")
+                st.info("暂无任务")
         
         st.divider()
         with st.expander("🔐 修改密码"):
