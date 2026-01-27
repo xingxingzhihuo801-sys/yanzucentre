@@ -7,15 +7,15 @@ import random
 import extra_streamlit_components as stx
 from supabase import create_client, Client
 
-# --- 1. 系统配置 ---
+# --- 1. 系统基础配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V20.0",
+    page_title="颜祖美学·执行中枢 V21.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# 样式优化
+# 强力 CSS 隐身与样式优化
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -25,7 +25,6 @@ st.markdown("""
         div[data-testid="stToolbar"] {visibility: hidden;}
         div[data-testid="stDecoration"] {visibility: hidden;}
         div[data-testid="stStatusWidget"] {visibility: hidden;}
-        
         div[data-testid="stRadio"] > div {
             flex-direction: row;
             justify-content: center;
@@ -34,7 +33,6 @@ st.markdown("""
             border-radius: 8px;
             border: 1px solid #dee2e6;
         }
-        
         .scrolling-text {
             width: 100%;
             background-color: #fff3cd;
@@ -57,10 +55,13 @@ except Exception:
     st.error("🚨 数据库连接失败。")
     st.stop()
 
-# --- 3. Cookie 管理 ---
-def get_manager():
-    return stx.CookieManager(key="yanzu_cookie_handler_v20_0")
-cookie_manager = get_manager()
+# --- 3. Cookie 管理器 (修复版) ---
+@st.cache_resource
+def get_cookie_manager():
+    # 固定的 Key 确保全局唯一性，避免 Duplicate Key 报错
+    return stx.CookieManager(key="yanzu_master_cookie_mgr")
+
+cookie_manager = get_cookie_manager()
 
 # --- 4. 核心工具 ---
 @st.cache_data(ttl=3)
@@ -78,8 +79,7 @@ def run_query(table_name):
 def get_announcement():
     try:
         res = supabase.table("messages").select("content").eq("username", "__NOTICE__").order("created_at", desc=True).limit(1).execute()
-        if res.data: return res.data[0]['content']
-        return "欢迎来到颜祖美学执行中枢！"
+        return res.data[0]['content'] if res.data else "欢迎来到颜祖美学执行中枢！"
     except:
         return "公告加载中..."
 
@@ -88,7 +88,11 @@ def update_announcement(text):
     supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": str(datetime.datetime.now())}).execute()
 
 def calculate_net_yvp(username, days_lookback=None):
-    if check_is_admin(username): return 0.0
+    users = run_query("users")
+    if not users.empty:
+        u_role = users[users['username']==username].iloc[0]['role'] if not users[users['username']==username].empty else "member"
+        if u_role == 'admin': return 0.0
+
     tasks = run_query("tasks")
     if tasks.empty: return 0.0
     my_done = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
@@ -113,36 +117,27 @@ def calculate_net_yvp(username, days_lookback=None):
                     total_fine += w_tasks['val'].sum() * 0.2
     return round(gross, 2) if days_lookback else round(gross - total_fine, 2)
 
-def check_is_admin(username):
-    users = run_query("users")
-    if not users.empty:
-        u = users[users['username']==username]
-        if not u.empty and u.iloc[0]['role'] == 'admin': return True
-    return False
-
 def format_deadline(d_val):
-    if pd.isna(d_val) or str(d_val) == 'NaT' or not d_val:
-        return "♾️ 无期限"
+    if pd.isna(d_val) or str(d_val) in ['NaT', 'None', '']: return "♾️ 无期限"
     return f"{d_val}"
-
-QUOTES = ["管理者的跃升，是从'对任务负责'到'对目标负责'。", "没有执行力，一切战略都是空谈。", "不要假装努力，结果不会陪你演戏。"]
-ENCOURAGEMENTS = ["🔥 哪怕是一颗螺丝钉，也要拧得比别人紧！", "🚀 相信你的能力，这个任务非你莫属！", "💪 干就完了！期待你的完美交付。"]
 
 # --- 5. 鉴权逻辑 ---
 if 'user' not in st.session_state:
     st.session_state.user = None
     st.session_state.role = None
+
+# Cookie 自动登录
 if st.session_state.user is None:
-    time.sleep(0.1) 
+    time.sleep(0.2) # 缓冲
     c_user = cookie_manager.get("yanzu_user")
     c_role = cookie_manager.get("yanzu_role")
     if c_user and c_role:
         st.session_state.user = c_user
         st.session_state.role = c_role
         st.rerun()
+
 if st.session_state.user is None:
     st.title("🏛️ 颜祖美学·执行中枢")
-    st.info(f"🔥 {random.choice(QUOTES)}")
     c1, c2 = st.columns(2)
     with c1:
         with st.form("login"):
@@ -159,8 +154,7 @@ if st.session_state.user is None:
                     st.success("欢迎回来")
                     time.sleep(0.5)
                     st.rerun()
-                else:
-                    st.error("密码错误")
+                else: st.error("密码错误")
     with c2:
         with st.expander("新兵注册"):
             nu = st.text_input("用户名")
@@ -169,16 +163,17 @@ if st.session_state.user is None:
                 try:
                     supabase.table("users").insert({"username": nu, "password": np, "role": "member"}).execute()
                     st.success("注册成功！")
-                except:
-                    st.warning("用户已存在")
+                except: st.warning("用户已存在")
     st.stop()
 
-# --- 6. 登录后界面 ---
 user = st.session_state.user
 role = st.session_state.role
+
+# 公告
 announcement = get_announcement()
 st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6" direction="left">🔔 公告：{announcement}</marquee></div>""", unsafe_allow_html=True)
 st.title(f"🏛️ 颜祖帝国 ({user})")
+
 nav_options = ["📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"]
 nav = st.radio("NAV", nav_options, horizontal=True, label_visibility="collapsed")
 st.divider()
@@ -190,12 +185,12 @@ with st.sidebar:
     if role != 'admin':
         yvp_7 = calculate_net_yvp(user, 7)
         yvp_all = calculate_net_yvp(user, None)
-        st.metric("本周产出", yvp_7)
-        st.metric("总净资产", yvp_all)
+        st.metric("本周产出", yvp_7); st.metric("总净资产", yvp_all)
     st.divider()
     if st.button("注销退出"):
-        cookie_manager.delete("yanzu_user")
-        cookie_manager.delete("yanzu_role")
+        # 修正：不直接调用 delete，通过 state 触发刷新
+        cookie_manager.set("yanzu_user", "", expires_at=datetime.datetime.now() - datetime.timedelta(days=1))
+        cookie_manager.set("yanzu_role", "", expires_at=datetime.datetime.now() - datetime.timedelta(days=1))
         st.session_state.user = None
         st.session_state.role = None
         time.sleep(0.5)
@@ -218,9 +213,8 @@ if nav == "📋 任务大厅":
                         st.markdown(f"⚙️ 难度: **{row['difficulty']}** | ⏱️ 工时: **{row['std_time']}**")
                         if st.button("⚡️ 抢单", key=f"grab_{row['id']}", type="primary"):
                             supabase.table("tasks").update({"status": "进行中", "assignee": user}).eq("id", int(row['id'])).execute()
-                            st.toast(random.choice(ENCOURAGEMENTS), icon="🔥")
-                            time.sleep(1)
-                            st.rerun()
+                            st.toast("🚀 相信你的能力，这个任务非你莫属！", icon="🔥")
+                            time.sleep(1); st.rerun()
         else: st.info("公共池空闲中")
     st.divider()
     c1, c2 = st.columns(2)
@@ -234,12 +228,12 @@ if nav == "📋 任务大厅":
                 st.dataframe(active_display[['title', 'assignee', 'status', 'Deadline']], use_container_width=True, hide_index=True)
             else: st.caption("全军休整中")
     with c2:
-        st.subheader("📜 荣誉榜 (Top 20)")
+        st.subheader("📜 荣誉榜")
         if not t_df.empty:
             done = t_df[t_df['status']=='完成'].sort_values('completed_at', ascending=False).head(20)
             if not done.empty:
                 done_display = done.copy()
-                done_display['Params'] = done_display.apply(lambda x: f"D{x['difficulty']} / T{x['std_time']} / Q{x['quality']}", axis=1)
+                done_display['Params'] = done_display.apply(lambda x: f"D{x['difficulty']}/T{x['std_time']}/Q{x['quality']}", axis=1)
                 st.dataframe(done_display[['title', 'assignee', 'Params']], use_container_width=True, hide_index=True)
 
 # ================= 🗣️ 颜祖广场 =================
@@ -281,14 +275,17 @@ elif nav == "🏆 风云榜":
 elif nav == "🏰 个人中心":
     if role == 'admin':
         st.header("👑 统帅控制台")
-        adm_tabs = st.tabs(["⚡️ 随手记", "🚀 发布", "🛠️ 管理(全权版)", "⚖️ 裁决", "📢 公告", "👥 成员", "💾 备份"])
+        # 10天定期提醒 (Feature 2)
+        if datetime.date.today().day % 10 == 0:
+            st.warning("📅 **统帅提醒：今天是第 {} 天备份日，请务必下载全量数据备份以防万一！**".format(datetime.date.today().day))
+            
+        adm_tabs = st.tabs(["⚡️ 随手记", "🚀 发布", "🛠️ 管理", "⚖️ 裁决", "📢 公告", "👥 成员", "💾 备份恢复"])
         
         with adm_tabs[0]: 
             st.info("⚡️ 随手记任务派给自己，不计分，完成后直接归档。")
-            q_title = st.text_input("任务内容", key="q_title")
-            q_desc = st.text_area("备注", key="q_desc")
+            q_title = st.text_input("内容")
             if st.button("⚡️ 立即创建", type="primary"):
-                supabase.table("tasks").insert({"title": q_title, "description": q_desc, "difficulty": 0, "std_time": 0, "status": "进行中", "assignee": user, "type": "AdminSelf", "feedback": "统帅自派"}).execute()
+                supabase.table("tasks").insert({"title": q_title, "difficulty": 0, "std_time": 0, "status": "进行中", "assignee": user, "type": "AdminSelf", "feedback": "统帅自派"}).execute()
                 st.success("已创建")
                 
         with adm_tabs[1]: # 发布
@@ -296,11 +293,10 @@ elif nav == "🏰 个人中心":
             title = c1.text_input("任务名称")
             col_date, col_check = c1.columns([3, 2])
             dead_input = col_date.date_input("截止日期")
-            no_deadline = col_check.checkbox("♾️ 无截止时间")
+            no_deadline = col_check.checkbox("♾️ 无截止日期")
             final_deadline = None if no_deadline else str(dead_input)
-            desc = st.text_area("详情")
-            diff = c2.number_input("难度", min_value=0.0, max_value=99.0, value=1.0, step=0.1)
-            stdt = c2.number_input("工时", min_value=0.0, max_value=99.0, value=1.0, step=0.5)
+            diff = c2.number_input("难度", value=1.0, step=0.1)
+            stdt = c2.number_input("工时", value=1.0, step=0.5)
             ttype = c2.radio("类型", ["公共任务池", "指定指派"], horizontal=True)
             assignee = "待定"
             udf = run_query("users")
@@ -310,96 +306,54 @@ elif nav == "🏰 个人中心":
                 if st.button("确定发布", type="primary"):
                     s = "待领取" if ttype=="公共任务池" else "进行中"
                     a = assignee if ttype=="指定指派" else "待定"
-                    supabase.table("tasks").insert({"title": title, "description": desc, "difficulty": diff, "std_time": stdt, "status": s, "assignee": a, "deadline": final_deadline, "type": ttype, "feedback": ""}).execute()
+                    supabase.table("tasks").insert({"title": title, "difficulty": diff, "std_time": stdt, "status": s, "assignee": a, "deadline": final_deadline, "type": ttype, "feedback": ""}).execute()
                     st.success("已发布")
 
-        with adm_tabs[2]: # 管理(全权版)
-            st.subheader("🛠️ 全局任务修正与精准检索")
-            tdf = run_query("tasks")
-            udf = run_query("users")
+        with adm_tabs[2]: # 管理
+            st.subheader("🛠️ 精准检索与修正")
+            tdf = run_query("tasks"); udf = run_query("users")
             if not tdf.empty:
-                c_filter1, c_filter2 = st.columns(2)
-                # 微调点：增加执行人检索
-                user_list = ["全部"] + list(udf['username'].unique())
-                filter_user = c_filter1.selectbox("🔍 按执行人过滤", user_list)
-                search_term = c_filter2.text_input("🔍 搜索标题关键词")
-                
-                # 执行过滤逻辑
-                filtered_tdf = tdf.copy()
-                if filter_user != "全部":
-                    filtered_tdf = filtered_tdf[filtered_tdf['assignee'] == filter_user]
-                if search_term:
-                    filtered_tdf = filtered_tdf[filtered_tdf['title'].str.contains(search_term, na=False, case=False)]
-                
-                if not filtered_tdf.empty:
-                    tid = st.selectbox("🎯 选择具体任务", filtered_tdf['id'], format_func=lambda x: f"ID:{x} | {filtered_tdf[filtered_tdf['id']==x]['title'].values[0]} ({filtered_tdf[filtered_tdf['id']==x]['assignee'].values[0]})")
-                    curr = filtered_tdf[filtered_tdf['id']==tid].iloc[0]
-                    
+                c_f1, c_f2 = st.columns(2)
+                f_u = c_f1.selectbox("按执行人过滤", ["全部"] + list(udf['username'].unique()))
+                s_t = c_f2.text_input("搜标题")
+                f_tdf = tdf.copy()
+                if f_u != "全部": f_tdf = f_tdf[f_tdf['assignee'] == f_u]
+                if s_t: f_tdf = f_tdf[f_tdf['title'].str.contains(s_t, na=False, case=False)]
+                if not f_tdf.empty:
+                    tid = st.selectbox("选择任务", f_tdf['id'], format_func=lambda x: f"ID:{x}|{f_tdf[f_tdf['id']==x]['title'].values[0]}")
+                    curr = f_tdf[f_tdf['id']==tid].iloc[0]
                     with st.container(border=True):
-                        st.markdown(f"#### 正在修改任务 ID: {tid}")
-                        # 微调点：开放所有数据编辑
-                        e_title = st.text_input("任务标题", curr['title'])
-                        e_desc = st.text_area("详细说明", curr.get('description', ''))
-                        
-                        col_e1, col_e2, col_e3 = st.columns(3)
-                        e_diff = col_e1.number_input("难度系数 (D)", value=float(curr['difficulty']), min_value=0.0, max_value=99.0)
-                        e_stdt = col_e2.number_input("预计工时 (T)", value=float(curr['std_time']), min_value=0.0, max_value=99.0)
-                        e_qual = col_e3.number_input("质量系数 (Q)", value=float(curr['quality']), min_value=0.0, max_value=3.0)
-                        
-                        col_e4, col_e5, col_e6 = st.columns(3)
-                        status_opts = ["待领取", "进行中", "待验收", "完成", "返工"]
-                        e_status = col_e4.selectbox("任务状态", status_opts, index=status_opts.index(curr['status']) if curr['status'] in status_opts else 0)
-                        e_assignee = col_e5.selectbox("执行人归属", udf['username'].tolist(), index=udf['username'].tolist().index(curr['assignee']) if curr['assignee'] in udf['username'].tolist() else 0)
-                        
-                        # 截止日期编辑
-                        curr_dead = curr.get('deadline')
-                        has_dead = not (pd.isna(curr_dead) or str(curr_dead) == 'None')
-                        e_no_dead = col_e6.checkbox("无截止日期", value=not has_dead)
-                        e_dead = col_e6.date_input("修改截止日期", value=curr_dead if has_dead else datetime.date.today())
-                        
-                        e_fb = st.text_area("反馈/御批内容", curr.get('feedback', ''))
-                        
-                        c_save, c_del = st.columns([1,4])
-                        if c_save.button("💾 确认全权修改"):
-                            final_dead = None if e_no_dead else str(e_dead)
-                            supabase.table("tasks").update({
-                                "title": e_title, "description": e_desc, "difficulty": e_diff, 
-                                "std_time": e_stdt, "quality": e_qual, "status": e_status, 
-                                "assignee": e_assignee, "deadline": final_dead, "feedback": e_fb,
-                                "completed_at": str(datetime.date.today()) if e_status == "完成" else None
-                            }).eq("id", int(tid)).execute()
-                            st.success("数据已全量更新！"); st.rerun()
-                        with c_del.popover("🗑️ 彻底删除"):
-                            if st.button("确认删除该记录", type="primary"):
+                        e_title = st.text_input("标题", curr['title'])
+                        e_diff = st.number_input("难度", value=float(curr['difficulty']))
+                        e_status = st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(curr['status']) if curr['status'] in ["待领取", "进行中", "待验收", "完成", "返工"] else 0)
+                        if st.button("💾 修改数据"):
+                            supabase.table("tasks").update({"title": e_title, "difficulty": e_diff, "status": e_status}).eq("id", int(tid)).execute(); st.success("OK"); st.rerun()
+                        with st.popover("🗑️ 删除"):
+                            if st.button("确认删除", type="primary"):
                                 supabase.table("tasks").delete().eq("id", int(tid)).execute(); st.rerun()
-                else: st.info("未找到匹配任务")
 
         with adm_tabs[3]: # 裁决
             pend = run_query("tasks")
             if not pend.empty: pend = pend[pend['status']=='待验收']
             if not pend.empty:
                 pid = st.selectbox("待审", pend['id'], format_func=lambda x: f"{pend[pend['id']==x]['title'].values[0]}")
-                pinfo = pend[pend['id']==pid].iloc[0]
-                st.caption(f"执行: {pinfo['assignee']} | D:{pinfo['difficulty']} | T:{pinfo['std_time']}")
                 with st.container(border=True):
-                    q = st.slider("质量", 0.0, 3.0, 1.0, 0.1)
-                    fb = st.text_area("御批")
-                    res = st.selectbox("结果", ["完成", "返工"])
+                    q = st.slider("质量", 0.0, 3.0, 1.0, 0.1); fb = st.text_area("御批"); res = st.selectbox("结果", ["完成", "返工"])
                     if st.button("提交裁决"):
                         cat = str(datetime.date.today()) if res=="完成" else None
                         supabase.table("tasks").update({"quality": q, "feedback": fb, "status": res, "completed_at": cat}).eq("id", int(pid)).execute()
                         st.success("生效"); st.rerun()
-            else: st.info("无待审")
         
         with adm_tabs[4]: # 公告
             st.subheader("📢 滚动公告")
-            update_n = st.text_input("新内容", placeholder=get_announcement())
+            update_n = st.text_input("新内容")
             if st.button("更新"): update_announcement(update_n); st.success("OK"); st.rerun()
+
         with adm_tabs[5]: # 成员
             udf = run_query("users")
             with st.expander("🚨 记过"):
                 target = st.selectbox("违规人", udf[udf['role']!='admin']['username'].tolist() if not udf.empty else [])
-                if st.button("记缺勤"): supabase.table("penalties").insert({"username": target, "occurred_at": str(datetime.date.today()), "reason": "缺勤"}).execute(); st.success("OK")
+                if st.button("确认记过"): supabase.table("penalties").insert({"username": target, "occurred_at": str(datetime.date.today()), "reason": "缺勤"}).execute(); st.success("OK")
             for i, m in udf[udf['role']!='admin'].iterrows():
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([2,2,1])
@@ -410,27 +364,58 @@ elif nav == "🏰 个人中心":
                     with c3.popover("驱逐"):
                         if st.button("确认", key=f"d{m['username']}", type="primary"):
                             supabase.table("users").delete().eq("username", m['username']).execute(); st.rerun()
-        with adm_tabs[6]: # 备份
-            d1 = run_query("users"); d2 = run_query("tasks"); d3 = run_query("penalties"); d4 = run_query("messages")
-            b = io.StringIO()
-            b.write("===USERS===\n"); d1.to_csv(b, index=False)
-            b.write("\n===TASKS===\n"); d2.to_csv(b, index=False)
-            b.write("\n===PENALTIES===\n"); d3.to_csv(b, index=False)
-            b.write("\n===MESSAGES===\n"); d4.to_csv(b, index=False)
-            st.download_button("📥 下载备份", b.getvalue(), "backup.txt")
 
-    else: # 普通成员视图
+        with adm_tabs[6]: # 备份与恢复 (Feature 1 & 5)
+            st.subheader("💾 帝国基石：数据备份与恢复")
+            d1 = run_query("users"); d2 = run_query("tasks"); d3 = run_query("penalties"); d4 = run_query("messages")
+            csv_b = io.StringIO()
+            csv_b.write("===USERS===\n"); d1.to_csv(csv_b, index=False)
+            csv_b.write("\n===TASKS===\n"); d2.to_csv(csv_b, index=False)
+            csv_b.write("\n===PENALTIES===\n"); d3.to_csv(csv_b, index=False)
+            csv_b.write("\n===MESSAGES===\n"); d4.to_csv(csv_b, index=False)
+            st.download_button("📥 下载全量备份", csv_b.getvalue(), f"backup_{datetime.date.today()}.txt")
+            
+            st.divider()
+            st.warning("⚠️ **数据恢复操作极其危险，将覆盖现有云端数据。**")
+            up_file = st.file_uploader("上传备份文件进行恢复", type=['txt'])
+            if up_file:
+                with st.popover("🛑 确认覆盖恢复"):
+                    st.write("点击下方按钮将彻底清空当前数据库并按此文件复原！")
+                    if st.button("确定执行恢复", type="primary"):
+                        try:
+                            content = up_file.getvalue().decode("utf-8")
+                            s_users = content.split("===USERS===\n")[1].split("===TASKS===")[0].strip()
+                            s_tasks = content.split("===TASKS===\n")[1].split("===PENALTIES===")[0].strip()
+                            s_pens = content.split("===PENALTIES===\n")[1].split("===MESSAGES===")[0].strip()
+                            s_msgs = content.split("===MESSAGES===\n")[1].strip()
+                            
+                            # 执行全清与插入
+                            supabase.table("users").delete().neq("username", "___").execute()
+                            supabase.table("tasks").delete().neq("id", -1).execute()
+                            supabase.table("penalties").delete().neq("id", -1).execute()
+                            supabase.table("messages").delete().neq("id", -1).execute()
+                            
+                            if s_users: supabase.table("users").insert(pd.read_csv(io.StringIO(s_users)).to_dict('records')).execute()
+                            if s_tasks: supabase.table("tasks").insert(pd.read_csv(io.StringIO(s_tasks)).to_dict('records')).execute()
+                            if s_pens: supabase.table("penalties").insert(pd.read_csv(io.StringIO(s_pens)).to_dict('records')).execute()
+                            if s_msgs: supabase.table("messages").insert(pd.read_csv(io.StringIO(s_msgs)).to_dict('records')).execute()
+                            
+                            st.success("恢复成功！"); time.sleep(1); st.rerun()
+                        except Exception as e: st.error(f"失败: {e}")
+
+    else: # 成员
         st.header("⚔️ 我的战场")
         tdf = run_query("tasks")
         if not tdf.empty:
-            today_done = tdf[(tdf['assignee']==user) & (tdf['status']=='完成') & (tdf['completed_at'] == datetime.date.today())]
-            if not today_done.empty: st.info(f"🔔 您有 {len(today_done)} 个任务今日已被验收评分！")
+            td_done = tdf[(tdf['assignee']==user) & (tdf['status']=='完成') & (tdf['completed_at'] == datetime.date.today())]
+            if not td_done.empty: st.info(f"🔔 喜报！您有 {len(td_done)} 个任务今日已评分！")
             my = tdf[(tdf['assignee']==user) & (tdf['status']=='进行中')]
             if not my.empty:
                 for i, r in my.iterrows():
                     with st.container(border=True):
                         st.markdown(f"**{r['title']}**")
-                        st.caption(f"📅 截止: **{format_deadline(r.get('deadline'))}**")
+                        # 明确显示截止时间 (Feature 1)
+                        st.markdown(f"📅 截止：**{format_deadline(r.get('deadline'))}**")
                         st.caption(f"⚙️ 难度: {r['difficulty']} | ⏱️ 工时: {r['std_time']}")
                         if st.button("✅ 交付验收", key=f"deliv_{r['id']}", type="primary"):
                              supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
@@ -440,3 +425,5 @@ elif nav == "🏰 个人中心":
         with st.expander("🔐 修改密码"):
             np = st.text_input("新密码", type="password")
             if st.button("修改"): supabase.table("users").update({"password": np}).eq("username", user).execute(); st.success("已更新")
+``` 你可以随时让我修改或删除预设操作。预设操作准备就绪时，“近期对话”中的本次对话旁边会出现一个小圆点。
+http://googleusercontent.com/task_confirmation_content/0
