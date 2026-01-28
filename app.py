@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V28.0",
+    page_title="颜祖美学·执行中枢 V29.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -42,6 +42,14 @@ st.markdown("""
             border-bottom: 1px solid #ffeeba;
             margin-bottom: 10px;
         }
+        /* 卡片内关键数据高亮 */
+        .highlight-data {
+            font-weight: bold;
+            color: #31333F;
+            background-color: #f0f2f6;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -55,7 +63,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v28_final_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v29_card_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -207,14 +215,12 @@ def show_task_history(username, role):
             st.caption(f"共找到 {len(filtered_df)} 条记录")
         else: st.info("未找到符合条件的记录")
 
-# --- 弹窗函数 ---
 @st.dialog("✅ 系统提示")
 def show_success_modal(msg="操作成功！"):
     st.write(msg)
     if st.button("关闭", type="primary"):
         st.rerun()
 
-# --- 语录库 ---
 QUOTES = [
     "AI不会淘汰人，利用AI的人会淘汰不用AI的人。", "不要假装努力，结果不会陪你演戏。", "种一棵树最好的时间是十年前，其次是现在。",
     "在风口上，猪都能飞起来；但我们要做那只长出翅膀的鹰。", "管理者的跃升，是从'对任务负责'到'对目标负责'。",
@@ -274,7 +280,6 @@ ann_text = get_announcement()
 st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6">🔔 公告：{ann_text}  |  💡 每日金句：{random.choice(QUOTES)}</marquee></div>""", unsafe_allow_html=True)
 st.title(f"🏛️ 帝国中枢 · {user}")
 
-# --- 登录即显示的弹窗提醒 ---
 @st.dialog("🔔 战场急报")
 def show_alerts(alerts):
     st.write("您有最新的任务动态：")
@@ -481,11 +486,25 @@ elif nav == "🏰 个人中心":
                 with st.container(border=True):
                     supabase.table("tasks").update({
                         "title": st.text_input("标题", tar['title'], key=f"et_{tid}"),
+                        "description": st.text_area("详情", tar.get('description', ''), key=f"edesc_{tid}"),
                         "difficulty": st.number_input("难度", value=float(tar['difficulty']), key=f"ed_{tid}"),
+                        "std_time": st.number_input("工时", value=float(tar['std_time']), key=f"est_{tid}"),
                         "quality": st.number_input("质量", value=float(tar['quality']), key=f"eq_{tid}"),
                         "status": st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(tar['status']), key=f"es_{tid}")
                     }).eq("id", int(tid)).execute()
-                    if st.button("💾 保存", key=f"eb_{tid}"): st.rerun()
+                    
+                    # 截止日期编辑
+                    c_edit_d1, c_edit_d2 = st.columns([3,2])
+                    curr_d = tar.get('deadline')
+                    is_null = pd.isna(curr_d) or str(curr_d) in ['None', 'NaT', '']
+                    edit_no_d = c_edit_d2.checkbox("无截止", value=is_null, key=f"enod_{tid}")
+                    edit_d_val = c_edit_d1.date_input("截止日期", value=curr_d if not is_null else datetime.date.today(), disabled=edit_no_d, key=f"edv_{tid}")
+                    
+                    if st.button("💾 保存", key=f"eb_{tid}"):
+                        final_d = None if edit_no_d else str(edit_d_val)
+                        supabase.table("tasks").update({"deadline": final_d}).eq("id", int(tid)).execute()
+                        st.rerun()
+                        
                     with st.popover("🗑️ 删除任务"):
                         if st.button("确认删除", key=f"btn_del_task_{tid}", type="primary"):
                             supabase.table("tasks").delete().eq("id", int(tid)).execute()
@@ -613,17 +632,48 @@ elif nav == "🏰 个人中心":
     else: # 成员界面
         st.header("⚔️ 我的战场")
         tdf = run_query("tasks")
-        my = tdf[(tdf['assignee']==user) & (tdf['status'].isin(['进行中', '返工']))]
+        # 1. 筛选进行中和返工
+        my = tdf[(tdf['assignee']==user) & (tdf['status'].isin(['进行中', '返工']))].copy()
+        
+        # 2. 排序：先按截止日期（近到远），无截止日期的排最后
+        my['deadline_dt'] = pd.to_datetime(my['deadline'], errors='coerce')
+        my = my.sort_values(by='deadline_dt', ascending=True, na_position='last')
+        
         for i, r in my.iterrows():
             with st.container(border=True):
                 prefix = "🔴 [需返工] " if r['status'] == '返工' else ""
                 st.markdown(f"**{prefix}{r['title']}**")
-                st.write(f"⚙️ **难度**: {r['difficulty']} | ⏱️ **工时**: {r['std_time']}")
-                st.write(f"📅 **截止**: {format_deadline(r.get('deadline'))}")
-                with st.expander("👁️ 查看详情"):
+                
+                # 3. 截止日期红色预警逻辑
+                d_val = r['deadline']
+                d_show = format_deadline(d_val)
+                d_style = ""
+                
+                if not pd.isna(d_val) and str(d_val) not in ['NaT', 'None', '']:
+                    d_dt = pd.to_datetime(d_val).date()
+                    today = datetime.date.today()
+                    if d_dt < today:
+                        d_show = f"{d_val} (⚠️ 已逾期)"
+                        d_style = "color: #D32F2F; font-weight: bold;"
+                    elif d_dt == today:
+                        d_show = f"{d_val} (🔥 今日截止)"
+                        d_style = "color: #D32F2F; font-weight: bold;"
+                
+                # 4. 卡片展示所有细节 (工时、难度、截止日期)
+                c_d1, c_d2, c_d3 = st.columns(3)
+                c_d1.markdown(f"⚙️ 难度: <span class='highlight-data'>{r['difficulty']}</span>", unsafe_allow_html=True)
+                c_d2.markdown(f"⏱️ 工时: <span class='highlight-data'>{r['std_time']}</span>", unsafe_allow_html=True)
+                if d_style:
+                    c_d3.markdown(f"📅 <span style='{d_style}'>{d_show}</span>", unsafe_allow_html=True)
+                else:
+                    c_d3.markdown(f"📅 {d_show}")
+                
+                # 5. 详情
+                with st.expander("📄 展开查看任务详情"):
                     st.write(r.get('description', '无详情'))
                     if r['status'] == '返工':
                         st.error(f"返工原因: {r.get('feedback', '无')}")
+                
                 if st.button("✅ 交付验收", key=f"dev_{r['id']}", type="primary"):
                     supabase.table("tasks").update({"status": "待验收"}).eq("id", int(r['id'])).execute()
                     show_success_modal("任务已提交验收！")
