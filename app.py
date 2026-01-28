@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V29.0",
+    page_title="颜祖美学·执行中枢 V30.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -42,13 +42,23 @@ st.markdown("""
             border-bottom: 1px solid #ffeeba;
             margin-bottom: 10px;
         }
-        /* 卡片内关键数据高亮 */
+        /* 数据高亮标签 */
         .highlight-data {
             font-weight: bold;
             color: #31333F;
-            background-color: #f0f2f6;
-            padding: 2px 6px;
+            background-color: #e8f0fe;
+            padding: 2px 8px;
             border-radius: 4px;
+            border: 1px solid #d2e3fc;
+        }
+        /* 获益高亮 */
+        .highlight-gold {
+            font-weight: bold;
+            color: #856404;
+            background-color: #fff3cd;
+            padding: 2px 8px;
+            border-radius: 4px;
+            border: 1px solid #ffeeba;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -63,7 +73,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v29_card_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v30_card_hist_mgr")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=3)
@@ -193,27 +203,67 @@ def show_task_history(username, role):
     if df.empty:
         st.info("暂无数据")
         return
+    
+    # 筛选已完成
     my_history = df[(df['assignee'] == username) & (df['status'] == '完成')].copy()
+    
     if my_history.empty:
         st.info("暂无已完成的任务记录")
     else:
+        # 数据处理
         my_history['completed_at'] = pd.to_datetime(my_history['completed_at'])
         my_history['Month'] = my_history['completed_at'].dt.strftime('%Y-%m')
+        
+        # 筛选器
         c_search, c_filter = st.columns(2)
         search_kw = c_search.text_input("🔍 搜索任务标题", key=f"hist_search_{username}")
         month_list = ["全部"] + sorted(my_history['Month'].unique().tolist(), reverse=True)
         month_sel = c_filter.selectbox("🗓️ 按月份筛选", month_list, key=f"hist_filter_{username}")
+        
+        # 执行筛选
         filtered_df = my_history.copy()
-        if month_sel != "全部": filtered_df = filtered_df[filtered_df['Month'] == month_sel]
-        if search_kw: filtered_df = filtered_df[filtered_df['title'].str.contains(search_kw, case=False, na=False)]
-        if not filtered_df.empty:
-            filtered_df['Deadline'] = filtered_df['deadline'].apply(format_deadline)
-            filtered_df['Completed'] = filtered_df['completed_at'].dt.date
-            filtered_df['Earned YVP'] = filtered_df['difficulty'] * filtered_df['std_time'] * filtered_df['quality']
-            cols_show = ['title', 'Completed', 'difficulty', 'std_time', 'quality', 'Earned YVP', 'feedback']
-            st.dataframe(filtered_df[cols_show].sort_values("Completed", ascending=False), use_container_width=True, hide_index=True)
-            st.caption(f"共找到 {len(filtered_df)} 条记录")
-        else: st.info("未找到符合条件的记录")
+        is_filtered = False
+        if month_sel != "全部": 
+            filtered_df = filtered_df[filtered_df['Month'] == month_sel]
+            is_filtered = True
+        if search_kw: 
+            filtered_df = filtered_df[filtered_df['title'].str.contains(search_kw, case=False, na=False)]
+            is_filtered = True
+            
+        # 排序：最近完成在前
+        filtered_df = filtered_df.sort_values("completed_at", ascending=False)
+        
+        # 如果没有筛选，只显示最近12条；有筛选显示全部符合的结果
+        display_df = filtered_df
+        if not is_filtered:
+            display_df = filtered_df.head(12)
+            st.caption("📜 仅显示最近归档的 12 项任务，如需查找更早记录，请使用上方筛选器。")
+        else:
+            st.caption(f"🔍 检索到 {len(display_df)} 条历史记录")
+
+        if not display_df.empty:
+            for i, r in display_df.iterrows():
+                with st.container(border=True):
+                    # 标题
+                    st.markdown(f"**✅ {r['title']}**")
+                    
+                    # 核心数据行
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.markdown(f"⚙️ 难度: <span class='highlight-data'>{r['difficulty']}</span>", unsafe_allow_html=True)
+                    c2.markdown(f"⏱️ 工时: <span class='highlight-data'>{r['std_time']}</span>", unsafe_allow_html=True)
+                    c3.markdown(f"🌟 质量: <span class='highlight-data'>{r['quality']}</span>", unsafe_allow_html=True)
+                    
+                    # 计算获益
+                    earned = r['difficulty'] * r['std_time'] * r['quality']
+                    c4.markdown(f"💰 获益: <span class='highlight-gold'>{round(earned, 2)}</span>", unsafe_allow_html=True)
+                    
+                    # 详情与御批
+                    st.caption(f"📅 归档日期: {r['completed_at'].date()}")
+                    with st.expander("📝 详情与御批"):
+                        st.write(f"**任务详情**: {r.get('description', '无')}")
+                        st.info(f"**御批反馈**: {r.get('feedback', '无')}")
+        else:
+            st.info("未找到符合条件的记录")
 
 @st.dialog("✅ 系统提示")
 def show_success_modal(msg="操作成功！"):
@@ -308,15 +358,22 @@ if not st.session_state.alert_shown and role != 'admin':
 nav = st.radio("NAV", ["📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"], horizontal=True, label_visibility="collapsed")
 st.divider()
 
+# --- 侧边栏：微调 2. 管理员精神鼓励 ---
 with st.sidebar:
     st.header(f"👤 {user}")
-    if role != 'admin':
+    
+    if role == 'admin':
+        # 管理员专属精神鼓励
+        st.success("👑 **统帅，您代表着帝国的未来。**\n\n运筹帷幄之中，决胜千里之外。\n\n辛苦了！")
+    else:
+        # 普通成员显示收益
         yvp_7 = calculate_net_yvp(user, 7)
         yvp_30 = calculate_net_yvp(user, 30)
         yvp_all = calculate_net_yvp(user)
         st.metric("7天净收益", yvp_7)
         st.metric("30天净收益", yvp_30)
         st.metric("总净资产", yvp_all)
+        
     st.divider()
     if st.button("注销退出"):
         cookie_manager.set("yanzu_user", "", expires_at=datetime.datetime.now() - datetime.timedelta(days=1))
@@ -493,7 +550,6 @@ elif nav == "🏰 个人中心":
                         "status": st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(tar['status']), key=f"es_{tid}")
                     }).eq("id", int(tid)).execute()
                     
-                    # 截止日期编辑
                     c_edit_d1, c_edit_d2 = st.columns([3,2])
                     curr_d = tar.get('deadline')
                     is_null = pd.isna(curr_d) or str(curr_d) in ['None', 'NaT', '']
@@ -632,10 +688,9 @@ elif nav == "🏰 个人中心":
     else: # 成员界面
         st.header("⚔️ 我的战场")
         tdf = run_query("tasks")
-        # 1. 筛选进行中和返工
         my = tdf[(tdf['assignee']==user) & (tdf['status'].isin(['进行中', '返工']))].copy()
         
-        # 2. 排序：先按截止日期（近到远），无截止日期的排最后
+        # 排序：截止时间近到远
         my['deadline_dt'] = pd.to_datetime(my['deadline'], errors='coerce')
         my = my.sort_values(by='deadline_dt', ascending=True, na_position='last')
         
@@ -644,11 +699,10 @@ elif nav == "🏰 个人中心":
                 prefix = "🔴 [需返工] " if r['status'] == '返工' else ""
                 st.markdown(f"**{prefix}{r['title']}**")
                 
-                # 3. 截止日期红色预警逻辑
+                # 截止日期预警
                 d_val = r['deadline']
                 d_show = format_deadline(d_val)
                 d_style = ""
-                
                 if not pd.isna(d_val) and str(d_val) not in ['NaT', 'None', '']:
                     d_dt = pd.to_datetime(d_val).date()
                     today = datetime.date.today()
@@ -659,7 +713,7 @@ elif nav == "🏰 个人中心":
                         d_show = f"{d_val} (🔥 今日截止)"
                         d_style = "color: #D32F2F; font-weight: bold;"
                 
-                # 4. 卡片展示所有细节 (工时、难度、截止日期)
+                # 卡片详情
                 c_d1, c_d2, c_d3 = st.columns(3)
                 c_d1.markdown(f"⚙️ 难度: <span class='highlight-data'>{r['difficulty']}</span>", unsafe_allow_html=True)
                 c_d2.markdown(f"⏱️ 工时: <span class='highlight-data'>{r['std_time']}</span>", unsafe_allow_html=True)
@@ -668,7 +722,6 @@ elif nav == "🏰 个人中心":
                 else:
                     c_d3.markdown(f"📅 {d_show}")
                 
-                # 5. 详情
                 with st.expander("📄 展开查看任务详情"):
                     st.write(r.get('description', '无详情'))
                     if r['status'] == '返工':
