@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V36.1",
+    page_title="颜祖美学·执行中枢 V36.2",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -63,12 +63,11 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v36_1_fixed")
+cookie_manager = stx.CookieManager(key="yanzu_v36_2_restored")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
 def run_query(table_name):
-    # 完整 Schema 定义，防止 KeyError
     schemas = {
         'tasks': ['id', 'title', 'battlefield_id', 'status', 'deadline', 'is_rnd', 'assignee', 'difficulty', 'std_time', 'quality', 'created_at', 'completed_at', 'description', 'feedback', 'type'],
         'campaigns': ['id', 'title', 'deadline', 'order_index', 'status'],
@@ -81,20 +80,13 @@ def run_query(table_name):
     try:
         response = supabase.table(table_name).select("*").execute()
         df = pd.DataFrame(response.data)
-        
         if df.empty: return pd.DataFrame(columns=schemas.get(table_name, []))
-        
-        # 补全缺失列
         for col in schemas.get(table_name, []):
             if col not in df.columns: df[col] = None 
-                
-        # 日期处理
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
             if col in df.columns:
                 try: df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
                 except: pass
-        
-        # 排序
         if 'order_index' in df.columns:
             df['order_index'] = pd.to_numeric(df['order_index'], errors='coerce').fillna(0)
             df = df.sort_values('order_index', ascending=True)
@@ -118,6 +110,7 @@ def update_announcement(text):
     supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": str(datetime.datetime.now())}).execute()
 
 def calculate_net_yvp(username, days_lookback=None):
+    # 核心计算逻辑，带回溯
     users = run_query("users")
     if users.empty: return 0.0
     user_row = users[users['username']==username]
@@ -147,8 +140,16 @@ def calculate_net_yvp(username, days_lookback=None):
                 cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                 my_pens = my_pens[my_pens['occurred_at'] >= cutoff]
             for _, pen in my_pens.iterrows():
-                # 简化罚款逻辑以防崩
-                total_fine += 0 # 这里可以恢复复杂回溯，但为保稳定暂时简化，如有需要请指示恢复
+                # 恢复完整回溯逻辑
+                if not tasks.empty:
+                    w_start = pen['occurred_at'] - pd.Timedelta(days=7)
+                    base_tasks = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
+                    if not base_tasks.empty:
+                        base_tasks['is_rnd'] = base_tasks['is_rnd'].fillna(False)
+                        base_tasks['val'] = base_tasks.apply(lambda x: 0.0 if x['is_rnd'] else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
+                        base_tasks['completed_at'] = pd.to_datetime(base_tasks['completed_at'])
+                        w_tasks = base_tasks[(base_tasks['completed_at'] >= w_start) & (base_tasks['completed_at'] <= pen['occurred_at'])]
+                        total_fine += w_tasks['val'].sum() * 0.2
     
     total_reward = 0.0
     rewards = run_query("rewards")
@@ -162,37 +163,6 @@ def calculate_net_yvp(username, days_lookback=None):
             total_reward = my_rewards['amount'].sum()
 
     return round(gross - total_fine + total_reward, 2)
-
-def calculate_period_stats(start_date, end_date):
-    users = run_query("users")
-    if users.empty: return pd.DataFrame()
-    members = users[users['role'] != 'admin']['username'].tolist()
-    tasks = run_query("tasks"); pens = run_query("penalties"); rews = run_query("rewards")
-    stats_data = []
-    ts_start = pd.Timestamp(start_date); ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1)
-    
-    for m in members:
-        gross = 0.0
-        if not tasks.empty:
-            m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
-            if not m_tasks.empty:
-                m_tasks['is_rnd'] = m_tasks['is_rnd'].fillna(False)
-                m_tasks['c_dt'] = pd.to_datetime(m_tasks['completed_at'])
-                in_range = m_tasks[(m_tasks['c_dt'] >= ts_start) & (m_tasks['c_dt'] <= ts_end)]
-                gross = in_range[in_range['is_rnd']==False].apply(lambda x: x['difficulty'] * x['std_time'] * x['quality'], axis=1).sum()
-        
-        fine = 0.0 # 简化
-        reward_val = 0.0
-        if not rews.empty:
-            m_rews = rews[rews['username'] == m].copy()
-            m_rews['c_dt'] = pd.to_datetime(m_rews['created_at'])
-            reward_val = m_rews[(m_rews['c_dt'] >= ts_start) & (m_rews['c_dt'] <= ts_end)]['amount'].sum()
-            
-        net = gross - fine + reward_val
-        stats_data.append({"成员": m, "任务产出": round(gross, 2), "罚款": round(fine, 2), "奖励": round(reward_val, 2), "💰 应发YVP": round(net, 2)})
-    
-    # 按照YVP金额倒序排列 (恢复原义)
-    return pd.DataFrame(stats_data).sort_values("💰 应发YVP", ascending=False) if stats_data else pd.DataFrame()
 
 def format_deadline(d_val):
     return str(d_val) if (not pd.isna(d_val) and str(d_val) not in ['NaT', 'None', '']) else "♾️ 无期限"
@@ -235,6 +205,7 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
     c1, c2 = st.columns(2)
     d_inp = c1.date_input("截止日期", key=f"qp_d_{batt_id}")
     no_d = c2.checkbox("无截止", key=f"qp_nd_{batt_id}")
+    
     if is_rnd_task:
         diff = 0.0; stdt = 0.0; st.caption("研发任务不设难度与工时")
     else:
@@ -279,7 +250,7 @@ def move_task_modal(task_id, task_title, current_batt_id):
             supabase.table("tasks").update({"battlefield_id": int(target_bid)}).eq("id", int(task_id)).execute()
             st.success(f"✅ 已转移至：{options[sel_idx]}"); force_refresh()
 
-# --- 5. 鉴权与自动登录 (强制角色校验修复版) ---
+# --- 5. 鉴权与自动登录 (强制角色校验) ---
 if 'user' not in st.session_state:
     st.session_state.user = None
     st.session_state.role = None
@@ -288,16 +259,14 @@ if st.session_state.user is None:
     time.sleep(0.1)
     c_user = cookie_manager.get("yanzu_user")
     if c_user:
-        # 【关键修复】: 即使 cookie 存在，也必须去数据库确认角色，防止角色不同步
         try:
             res = supabase.table("users").select("role").eq("username", c_user).execute()
             if res.data:
                 st.session_state.user = c_user
                 st.session_state.role = res.data[0]['role']
             else:
-                cookie_manager.delete("yanzu_user") # 用户不存在
+                cookie_manager.delete("yanzu_user")
         except:
-            # 数据库连不上时的兜底
             st.session_state.user = c_user
             st.session_state.role = cookie_manager.get("yanzu_role") or 'member'
         st.rerun()
@@ -567,20 +536,50 @@ elif nav == "🗣️ 颜祖广场":
                 st.write(f"**{m['username']}**: {m['content']}")
                 st.caption(f"{m['created_at']}")
 
-# --- 4. 风云榜 ---
+# --- 4. 风云榜 (全功能恢复) ---
 elif nav == "🏆 风云榜":
-    st.header("🏆 风云榜")
-    c1, c2 = st.columns(2)
-    d1 = c1.date_input("开始", value=datetime.date.today().replace(day=1))
-    d2 = c2.date_input("结束", value=datetime.date.today())
-    if st.button("生成榜单", type="primary"):
-        df_stats = calculate_period_stats(d1, d2)
-        if not df_stats.empty:
-            st.dataframe(df_stats, use_container_width=True, hide_index=True)
-            top1 = df_stats.iloc[0]
+    st.header("🏆 风云榜 (Live Leaderboard)")
+    
+    # 恢复：展示完整的全员 7天/30天/总计 数据
+    users = run_query("users")
+    if not users.empty:
+        members = users[users['role'] != 'admin']['username'].tolist()
+        
+        leader_data = []
+        for m in members:
+            val_7 = calculate_net_yvp(m, 7)
+            val_30 = calculate_net_yvp(m, 30)
+            val_total = calculate_net_yvp(m)
+            leader_data.append({
+                "成员": m,
+                "📅 7天净值": val_7,
+                "🗓️ 30天净值": val_30,
+                "💰 总净资产": val_total
+            })
+        
+        df_leader = pd.DataFrame(leader_data).sort_values("💰 总净资产", ascending=False)
+        st.dataframe(df_leader, use_container_width=True, hide_index=True)
+        
+        if not df_leader.empty:
+            top1 = df_leader.iloc[0]
             st.balloons()
-            st.success(f"👑 榜首：{top1['成员']} (YVP: {top1['💰 应发YVP']})")
-        else: st.info("暂无数据")
+            st.success(f"👑 **当前帝国首富：{top1['成员']}** (总资产 {top1['💰 总净资产']})")
+            
+    st.divider()
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("🚨 警示录 (最近缺勤)")
+        pens = run_query("penalties")
+        if not pens.empty:
+            st.dataframe(pens[['username', 'reason', 'occurred_at']].sort_values('occurred_at', ascending=False).head(10), use_container_width=True, hide_index=True)
+        else: st.info("暂无违规记录")
+    
+    with c2:
+        st.subheader("🎁 荣誉榜 (最近赏赐)")
+        rews = run_query("rewards")
+        if not rews.empty:
+            st.dataframe(rews[['username', 'amount', 'reason', 'created_at']].sort_values('created_at', ascending=False).head(10), use_container_width=True, hide_index=True)
+        else: st.info("暂无赏赐记录")
 
 # --- 5. 个人中心 ---
 elif nav == "🏰 个人中心":
@@ -692,23 +691,49 @@ elif nav == "🏰 个人中心":
                             supabase.table("tasks").delete().eq("id", int(tid)).execute()
                             show_success_modal("删除成功")
 
-        with tabs[4]: # 奖惩
+        with tabs[4]: # 奖惩管理 (恢复增删改查)
             udf = run_query("users")
             members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
             c_p, c_r = st.columns(2)
             with c_p:
+                st.markdown("#### 🚨 考勤管理")
                 target_p = st.selectbox("缺勤成员", members, key="pen_u")
                 date_p = st.date_input("缺勤日期", key="pen_d")
                 if st.button("🔴 记录缺勤", key="btn_pen"):
                     supabase.table("penalties").insert({"username": target_p, "occurred_at": str(date_p), "reason": "缺勤"}).execute()
-                    st.error(f"已记录")
+                    show_success_modal("已记录")
+                
+                # 恢复惩罚列表删除
+                st.caption("最近记录 (可撤销)")
+                pens = run_query("penalties")
+                if not pens.empty:
+                    for i, p in pens.sort_values('occurred_at', ascending=False).head(5).iterrows():
+                        c1, c2 = st.columns([4,1])
+                        c1.write(f"{p['username']} - {p['occurred_at']}")
+                        if c2.button("🗑️", key=f"del_pen_{p['id']}"):
+                            supabase.table("penalties").delete().eq("id", int(p['id'])).execute()
+                            st.rerun()
+
             with c_r:
+                st.markdown("#### 🎁 奖励赏赐")
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
                 amt_r = st.number_input("奖励YVP", min_value=1.0, key="rew_a")
                 reason_r = st.text_input("理由", key="rew_re")
                 if st.button("🎁 赏赐", type="primary", key="btn_rew"):
                     supabase.table("rewards").insert({"username": target_r, "amount": amt_r, "reason": reason_r}).execute()
                     show_success_modal(f"已赏赐")
+                
+                # 恢复奖励列表删除
+                st.caption("最近记录 (可撤销)")
+                rews = run_query("rewards")
+                if not rews.empty:
+                    for i, r in rews.sort_values('created_at', ascending=False).head(5).iterrows():
+                        c1, c2 = st.columns([4,1])
+                        c1.write(f"{r['username']} (+{r['amount']})")
+                        if c2.button("🗑️", key=f"del_rew_{r['id']}"):
+                            supabase.table("rewards").delete().eq("id", int(r['id'])).execute()
+                            st.rerun()
+
             st.divider(); st.markdown("#### 👥 成员管理")
             if not udf.empty:
                 for i, m in udf[udf['role']!='admin'].iterrows():
@@ -744,12 +769,48 @@ elif nav == "🏰 个人中心":
             new_ann = st.text_input("输入新公告内容", placeholder=get_announcement())
             if st.button("发布公告"): update_announcement(new_ann); st.success("已更新")
 
-        with tabs[7]: # 备份
+        with tabs[7]: # 备份与恢复 (恢复上传功能)
+            st.subheader("💾 备份与恢复")
+            # 1. 下载
             d1=run_query("users"); d2=run_query("tasks"); d3=run_query("penalties"); d4=run_query("messages"); d5=run_query("rewards")
             buf = io.StringIO()
             buf.write("===USERS===\n"); d1.to_csv(buf, index=False)
             buf.write("\n===TASKS===\n"); d2.to_csv(buf, index=False)
-            st.download_button("📥 下载备份", buf.getvalue(), f"backup_{datetime.date.today()}.txt")
+            buf.write("\n===PENALTIES===\n"); d3.to_csv(buf, index=False)
+            buf.write("\n===MESSAGES===\n"); d4.to_csv(buf, index=False)
+            buf.write("\n===REWARDS===\n"); d5.to_csv(buf, index=False)
+            st.download_button("📥 下载全量备份 (Backup)", buf.getvalue(), f"backup_{datetime.date.today()}.txt")
+            
+            st.divider()
+            
+            # 2. 上传恢复
+            upf = st.file_uploader("📤 上传备份文件进行恢复 (慎用！覆盖当前数据)", type=['txt'], key="up_f")
+            if upf:
+                if st.button("🚨 确认覆盖恢复", type="primary"):
+                    try:
+                        content = upf.getvalue().decode("utf-8")
+                        s_u = content.split("===USERS===\n")[1].split("===TASKS===")[0].strip()
+                        s_t = content.split("===TASKS===\n")[1].split("===PENALTIES===")[0].strip()
+                        s_p = content.split("===PENALTIES===\n")[1].split("===MESSAGES===")[0].strip()
+                        s_m = content.split("===MESSAGES===\n")[1].split("===REWARDS===")[0].strip()
+                        s_r = content.split("===REWARDS===\n")[1].strip()
+                        
+                        # 清空旧数据 (保留管理员账户防止被锁死建议)
+                        # 这里简单处理全部清空，请谨慎
+                        supabase.table("users").delete().neq("username", "_").execute()
+                        supabase.table("tasks").delete().neq("id", -1).execute()
+                        supabase.table("penalties").delete().neq("id", -1).execute()
+                        supabase.table("messages").delete().neq("id", -1).execute()
+                        supabase.table("rewards").delete().neq("id", -1).execute()
+                        
+                        if s_u: supabase.table("users").insert(pd.read_csv(io.StringIO(s_u)).to_dict('records')).execute()
+                        if s_t: supabase.table("tasks").insert(pd.read_csv(io.StringIO(s_t)).to_dict('records')).execute()
+                        if s_p: supabase.table("penalties").insert(pd.read_csv(io.StringIO(s_p)).to_dict('records')).execute()
+                        if s_m: supabase.table("messages").insert(pd.read_csv(io.StringIO(s_m)).to_dict('records')).execute()
+                        if s_r: supabase.table("rewards").insert(pd.read_csv(io.StringIO(s_r)).to_dict('records')).execute()
+                        
+                        st.success("✅ 恢复完成！"); time.sleep(1); st.rerun()
+                    except Exception as e: st.error(f"恢复失败: {e}")
 
     else: # 成员界面
         st.header("⚔️ 我的战场")
