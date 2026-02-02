@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V35.1",
+    page_title="颜祖美学·执行中枢 V35.2",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -91,7 +91,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v35_1_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v35_2_feedback")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -373,7 +373,7 @@ def move_task_modal(task_id, task_title, current_batt_id, all_batts_df):
     
     if st.button("确认调动", type="primary"):
         supabase.table("tasks").update({"battlefield_id": int(target_bid)}).eq("id", int(task_id)).execute()
-        st.success("调动完成！"); time.sleep(0.5); st.rerun()
+        st.toast(f"✅ 任务【{task_title}】调动成功！"); time.sleep(0.5); st.rerun()
 
 
 QUOTES = [
@@ -484,7 +484,7 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 1. 战略作战室 (V35.1 修复版) ---
+# --- 1. 战略作战室 (V35.2 反馈修复版) ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
@@ -510,7 +510,7 @@ if nav == "🔭 战略作战室":
                     if st.button("确立战役"):
                          d_val = str(new_camp_d) if new_camp_d else None
                          supabase.table("campaigns").insert({"title": new_camp_t, "deadline": d_val}).execute()
-                         st.rerun()
+                         st.success("✅ 战役已建立！"); time.sleep(1); st.rerun()
     
     st.divider()
     
@@ -534,14 +534,14 @@ if nav == "🔭 战略作战室":
                         if st.button("保存", key=f"sv_c_{camp['id']}"):
                             d_val = str(ec_d) if ec_d else None
                             supabase.table("campaigns").update({"title": ec_t, "deadline": d_val}).eq("id", int(camp['id'])).execute()
-                            st.rerun()
+                            st.success("✅ 保存成功！"); time.sleep(1); st.rerun()
                         st.divider()
                         if st.button("🗑️ 删除", key=f"del_c_{camp['id']}", type="primary"):
                             has_batt = not batts[batts['campaign_id'] == camp['id']].empty
                             if has_batt: st.error("请先清空战场！")
                             else: 
                                 supabase.table("campaigns").delete().eq("id", int(camp['id'])).execute()
-                                st.rerun()
+                                st.success("✅ 战役已删除！"); time.sleep(1); st.rerun()
 
                 # 进度条
                 camp_batts = batts[batts['campaign_id'] == camp['id']]
@@ -566,14 +566,14 @@ if nav == "🔭 战略作战室":
                                 eb_t = st.text_input("战场名称", value=batt['title'], key=f"ebt_{batt['id']}")
                                 if st.button("保存", key=f"bsv_{batt['id']}"):
                                     supabase.table("battlefields").update({"title": eb_t}).eq("id", int(batt['id'])).execute()
-                                    st.rerun()
+                                    st.success("✅ 战场名称已更新"); time.sleep(1); st.rerun()
                                 st.divider()
                                 if st.button("🗑️ 删除", key=f"bdel_{batt['id']}", type="primary"):
                                     if not all_tasks[all_tasks['battlefield_id'] == batt['id']].empty:
                                         st.error("请先清空任务！")
                                     else:
                                         supabase.table("battlefields").delete().eq("id", int(batt['id'])).execute()
-                                        st.rerun()
+                                        st.success("✅ 战场已删除"); time.sleep(1); st.rerun()
 
                         with bc1.expander(f"🛡️ {batt['title']}", expanded=True):
                             # 编辑模式下：添加任务按钮
@@ -611,15 +611,14 @@ if nav == "🔭 战略作战室":
                             else:
                                 st.caption("战场整备中")
 
-                # 战役底部：新增战场 (仅编辑模式 - 修复点：使用Expander替代Popover以防崩溃)
+                # 战役底部：新增战场 (仅编辑模式 - 修复点：使用Expander替代Popover以防崩溃 + 成功回馈)
                 if edit_mode and role == 'admin':
-                    # 使用 expander 替代 popover，并强制转换 ID 为 int 确保 key 安全
                     cid_safe = int(camp['id'])
                     with st.expander("➕ 开辟新战场", expanded=False):
                         nb_t = st.text_input("新战场名称", key=f"nbt_{cid_safe}")
                         if st.button("确认开辟", key=f"nb_btn_{cid_safe}"):
                             supabase.table("battlefields").insert({"campaign_id": cid_safe, "title": nb_t}).execute()
-                            st.rerun()
+                            st.success("✅ 战场开辟成功！"); time.sleep(1); st.rerun()
 
 elif nav == "📋 任务大厅":
     st.header("🛡️ 任务大厅")
