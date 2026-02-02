@@ -9,13 +9,13 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V35.7",
+    page_title="颜祖美学·执行中枢 V35.8",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# --- CSS 美化 (完全复原) ---
+# --- CSS 美化 (保持 V35.7 的高颜值) ---
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -91,9 +91,9 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v35_7_restored")
+cookie_manager = stx.CookieManager(key="yanzu_v35_8_final_fix")
 
-# --- 4. 核心工具函数 (修复KeyError的核心) ---
+# --- 4. 核心工具函数 (彻底修复数据不显示的问题) ---
 @st.cache_data(ttl=2) 
 def run_query(table_name):
     # 定义标准表结构，防止空数据导致的 KeyError
@@ -108,35 +108,41 @@ def run_query(table_name):
     }
     
     try:
-        query = supabase.table(table_name).select("*")
-        # 尝试按 order_index 排序
-        try:
-            query = query.order("order_index", desc=False)
-        except:
-            pass 
-        response = query.order("id", desc=False).execute()
+        # 【核心修正】：不要在API请求里加 .order()，因为不是所有表都有 order_index
+        # 我们先把原始数据全拿回来，再在 Python 里排序
+        response = supabase.table(table_name).select("*").execute()
         df = pd.DataFrame(response.data)
         
-        # 【关键修复】如果数据为空，返回带列名的空表
+        # 1. 判空并初始化列名
         if df.empty:
             return pd.DataFrame(columns=schemas.get(table_name, []))
         
-        # 补充可能缺失的列 (比如新加的 is_rnd)
+        # 2. 补充可能缺失的列 (比如 is_rnd 或 order_index)
         expected_cols = schemas.get(table_name, [])
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = None # 填充缺失列
                 
-        # 日期转换
+        # 3. 日期转换
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
             if col in df.columns:
                 try:
                     df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
                 except:
                     pass
+        
+        # 4. 【安全排序】：在这里进行内存排序，绝对安全
+        if 'order_index' in df.columns:
+            # 确保是数字类型
+            df['order_index'] = pd.to_numeric(df['order_index'], errors='coerce').fillna(0)
+            df = df.sort_values('order_index', ascending=True)
+        elif 'id' in df.columns:
+            df = df.sort_values('id', ascending=True)
+            
         return df
-    except:
-        # 发生任何错误，返回带列名的空表，保证不崩
+    except Exception as e:
+        # 最后的防线：如果还是报错，返回空结构，但打印错误方便调试（如果不想要错误提示可以注释掉 print）
+        # print(f"Error fetching {table_name}: {e}")
         return pd.DataFrame(columns=schemas.get(table_name, []))
 
 # 强制刷新缓存
@@ -339,7 +345,7 @@ def show_task_history(username, role):
 def show_success_modal(msg="操作成功！"):
     st.write(msg)
     if st.button("关闭", type="primary"):
-        st.rerun()
+        force_refresh()
 
 # --- 快捷发布任务弹窗 ---
 @st.dialog("➕ 在此发布任务")
@@ -378,7 +384,7 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
         }).execute()
         st.success("发布成功！"); force_refresh()
 
-# --- 任务调动弹窗 ---
+# --- 任务调动弹窗 (优化：支持全战役/全战场) ---
 @st.dialog("🔀 调动任务 (全域)")
 def move_task_modal(task_id, task_title, current_batt_id):
     st.markdown(f"正在调动任务：**{task_title}**")
@@ -396,7 +402,7 @@ def move_task_modal(task_id, task_title, current_batt_id):
     opt_ids = [] 
     
     current_idx = 0
-    # 安全排序
+    
     if 'campaign_id' in all_batts.columns:
         sorted_batts = all_batts.sort_values(by='campaign_id')
     else:
@@ -532,7 +538,7 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 1. 战略作战室 (V35.7 修复版) ---
+# --- 1. 战略作战室 (V35.8 完美复原+修复版) ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
@@ -569,11 +575,13 @@ if nav == "🔭 战略作战室":
     if not camps.empty:
         for _, camp in camps.iterrows():
             with st.container(border=True):
+                # 战役头部
                 c1, c2, c3 = st.columns([3, 1.5, 0.5])
                 status_icon = "👑" if camp['id'] == -1 else "🚩"
                 c1.subheader(f"{status_icon} {camp['title']}")
                 if camp['deadline']: c2.caption(f"🏁 截止: {camp['deadline']}")
                 
+                # 战役编辑 (仅编辑模式)
                 if edit_mode and role == 'admin' and camp['id'] != -1:
                     with c3.popover("⚙️"):
                         st.write("**编辑战役**")
@@ -596,13 +604,12 @@ if nav == "🔭 战略作战室":
                                 supabase.table("campaigns").delete().eq("id", int(camp['id'])).execute()
                                 st.success("✅ 删除成功！"); force_refresh()
 
-                # --- 修复核心：安全过滤 ---
+                # 进度条
+                camp_batts = pd.DataFrame()
                 if not batts.empty:
                     camp_batts = batts[batts['campaign_id'] == camp['id']]
                     if 'order_index' in camp_batts.columns:
                         camp_batts = camp_batts.sort_values('order_index')
-                else:
-                    camp_batts = pd.DataFrame()
                 
                 camp_tasks = pd.DataFrame()
                 if not all_tasks.empty and not camp_batts.empty:
@@ -617,10 +624,13 @@ if nav == "🔭 战略作战室":
                     st.progress(prog, text=f"战役总进度: {int(prog*100)}% ({done_count}/{total_count})")
                 else: st.progress(0, text="整备中...")
 
+                # 战场循环
                 if not camp_batts.empty:
                     for _, batt in camp_batts.iterrows():
+                        # 战场头部布局
                         bc1, bc2 = st.columns([0.9, 0.1])
                         
+                        # 战场编辑 (仅编辑模式)
                         if edit_mode and role == 'admin' and batt['id'] != -1:
                             with bc2.popover("⚙️", key=f"b_pop_{batt['id']}"):
                                 eb_t = st.text_input("战场名称", value=batt['title'], key=f"ebt_{batt['id']}")
@@ -646,6 +656,7 @@ if nav == "🔭 战略作战室":
                                         st.success("✅ 删除成功"); force_refresh()
 
                         with bc1.expander(f"🛡️ {batt['title']}", expanded=True):
+                            # 编辑模式下：添加任务按钮
                             if edit_mode and role == 'admin':
                                 if st.button("➕ 在此发布任务", key=f"qp_btn_{batt['id']}"):
                                     quick_publish_modal(camp['id'], batt['id'], batt['title'])
@@ -661,19 +672,26 @@ if nav == "🔭 战略作战室":
                                 
                                 active_bt = b_tasks[b_tasks['status'].isin(['待领取', '进行中', '返工', '待验收'])]
                                 if not active_bt.empty:
+                                    # 任务卡片式渲染 (支持调动)
                                     for idx, task in active_bt.iterrows():
+                                        # 布局：任务信息 | 调动按钮(仅编辑模式)
                                         cols_task = st.columns([0.85, 0.15]) if edit_mode else [st.container()]
+                                        
                                         with cols_task[0]:
                                             t_icon = "🟣" if task.get('is_rnd') else "⚔️"
                                             t_dead = format_deadline(task.get('deadline'))
                                             st.markdown(f"**{t_icon} {task['title']}** <span style='color:grey;font-size:0.8em'>({task['assignee']} | {task['status']} | 📅 {t_dead})</span>", unsafe_allow_html=True)
+                                        
                                         if edit_mode and role == 'admin':
                                             with cols_task[1]:
                                                 if st.button("🔀", key=f"mv_{task['id']}", help="全域调动"):
                                                     move_task_modal(task['id'], task['title'], batt['id'])
-                                else: st.caption("暂无活跃任务")
-                            else: st.caption("战场整备中")
+                                else:
+                                    st.caption("暂无活跃任务")
+                            else:
+                                st.caption("战场整备中")
 
+                # 战役底部：新增战场 (仅编辑模式 - 修复点：使用Expander替代Popover以防崩溃 + 成功回馈)
                 if edit_mode and role == 'admin':
                     cid_safe = int(camp['id'])
                     with st.expander("➕ 开辟新战场", expanded=False):
