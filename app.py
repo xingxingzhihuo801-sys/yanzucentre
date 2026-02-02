@@ -63,11 +63,12 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v36_3_fixed_move")
+cookie_manager = stx.CookieManager(key="yanzu_v36_3_move_fix")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
 def run_query(table_name):
+    # 完整 Schema 定义，防止 KeyError
     schemas = {
         'tasks': ['id', 'title', 'battlefield_id', 'status', 'deadline', 'is_rnd', 'assignee', 'difficulty', 'std_time', 'quality', 'created_at', 'completed_at', 'description', 'feedback', 'type'],
         'campaigns': ['id', 'title', 'deadline', 'order_index', 'status'],
@@ -80,23 +81,34 @@ def run_query(table_name):
     try:
         response = supabase.table(table_name).select("*").execute()
         df = pd.DataFrame(response.data)
-        if df.empty: return pd.DataFrame(columns=schemas.get(table_name, []))
         
-        for col in schemas.get(table_name, []):
-            if col not in df.columns: df[col] = None 
+        # 空表防御
+        if df.empty:
+            return pd.DataFrame(columns=schemas.get(table_name, []))
+        
+        # 补全缺失列
+        expected_cols = schemas.get(table_name, [])
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = None 
                 
+        # 日期处理
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
             if col in df.columns:
-                try: df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
+                try:
+                    df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
                 except: pass
         
+        # 安全排序
         if 'order_index' in df.columns:
             df['order_index'] = pd.to_numeric(df['order_index'], errors='coerce').fillna(0)
             df = df.sort_values('order_index', ascending=True)
         elif 'id' in df.columns:
             df = df.sort_values('id', ascending=True)
+            
         return df
-    except: return pd.DataFrame(columns=schemas.get(table_name, []))
+    except:
+        return pd.DataFrame(columns=schemas.get(table_name, []))
 
 def force_refresh():
     st.cache_data.clear()
@@ -189,7 +201,15 @@ def calculate_period_stats(start_date, end_date):
             m_pens['o_dt'] = pd.to_datetime(m_pens['occurred_at'])
             in_range_pens = m_pens[(m_pens['o_dt'] >= ts_start) & (m_pens['o_dt'] <= ts_end)]
             for _, p in in_range_pens.iterrows():
-                 fine += 0 # 简化显示，如需精确回溯可恢复
+                 if not tasks.empty:
+                    w_start = p['occurred_at'] - pd.Timedelta(days=7)
+                    base_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
+                    if not base_tasks.empty:
+                        base_tasks['is_rnd'] = base_tasks['is_rnd'].fillna(False)
+                        base_tasks['val'] = base_tasks.apply(lambda x: 0.0 if x['is_rnd'] else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
+                        base_tasks['completed_at'] = pd.to_datetime(base_tasks['completed_at'])
+                        w_tasks = base_tasks[(base_tasks['completed_at'] >= w_start) & (base_tasks['completed_at'] <= p['occurred_at'])]
+                        fine += w_tasks['val'].sum() * 0.2
             
         reward_val = 0.0
         if not rews.empty:
@@ -242,6 +262,7 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
     c1, c2 = st.columns(2)
     d_inp = c1.date_input("截止日期", key=f"qp_d_{batt_id}")
     no_d = c2.checkbox("无截止", key=f"qp_nd_{batt_id}")
+    
     if is_rnd_task:
         diff = 0.0; stdt = 0.0; st.caption("研发任务不设难度与工时")
     else:
@@ -261,58 +282,59 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
         }).execute()
         st.success("发布成功！"); force_refresh()
 
-# --- 任务调动弹窗 (全域修正版) ---
+# --- 任务调动弹窗 (全域精准版 - 曲线救国方案) ---
 @st.dialog("🔀 调动任务 (全域)")
 def move_task_modal(task_id, task_title, current_batt_id):
     st.markdown(f"正在调动任务：**{task_title}**")
     
-    # 重新获取全量数据
+    # 1. 获取全量数据
     all_camps = run_query("campaigns")
     all_batts = run_query("battlefields")
     
     if all_camps.empty or all_batts.empty:
-        st.error("无法加载战场数据"); return
+        st.error("数据加载失败"); return
 
-    # 构建映射字典 {id: title}
+    # 2. 建立 【ID -> 名称】 的精准映射字典
     camp_map = {int(row['id']): row['title'] for _, row in all_camps.iterrows()}
     
-    options = []
-    opt_ids = []
-    current_idx = 0
+    # 3. 构建选项字典： {战场ID : "【战役名】> 战场名"}
+    # 这样 Selectbox 返回的直接就是战场ID，不需要再去算索引
+    batt_options = {}
     
-    # 按照战役ID排序，保证显示层级清晰
+    # 先排序：按战役ID，再按战场ID
     if 'campaign_id' in all_batts.columns:
-        # 强制转换 campaign_id 为数字进行排序
         all_batts['campaign_id'] = pd.to_numeric(all_batts['campaign_id'], errors='coerce').fillna(-9999)
         sorted_batts = all_batts.sort_values(by=['campaign_id', 'id'])
     else:
         sorted_batts = all_batts
 
-    # 遍历构建选项
-    for i, (_, batt) in enumerate(sorted_batts.iterrows()):
-        batt_id = int(batt['id'])
-        camp_id = int(batt['campaign_id'])
+    for _, batt in sorted_batts.iterrows():
+        b_id = int(batt['id'])
+        c_id = int(batt['campaign_id'])
+        c_name = camp_map.get(c_id, "未知战役")
+        if c_id == -1: c_name = "👑 统帅直辖"
         
-        c_title = camp_map.get(camp_id, "未知战役")
-        if camp_id == -1: c_title = "👑 统帅直辖"
-        
-        # 显示格式：[战役] > [战场]
-        display_text = f"【{c_title}】 👉 {batt['title']}"
-        options.append(display_text)
-        opt_ids.append(batt_id)
-        
-        if batt_id == current_batt_id:
-            current_idx = i
-            
-    sel_idx = st.selectbox("选择目标归属", range(len(options)), format_func=lambda x: options[x], index=current_idx)
-    target_bid = opt_ids[sel_idx]
+        # 存入字典
+        batt_options[b_id] = f"【{c_name}】 👉 {batt['title']}"
+
+    # 4. 渲染选择框
+    # 如果当前战场ID不在列表里（比如脏数据），就默认第一个
+    default_id = int(current_batt_id) if int(current_batt_id) in batt_options else list(batt_options.keys())[0]
     
+    selected_batt_id = st.selectbox(
+        "选择目标归属",
+        options=list(batt_options.keys()), # 选项列表是 ID
+        format_func=lambda x: batt_options[x], # 显示内容是 名称
+        index=list(batt_options.keys()).index(default_id) if default_id in batt_options else 0
+    )
+    
+    # 5. 执行
     if st.button("🚀 立即调动", type="primary"):
-        if target_bid == current_batt_id:
+        if selected_batt_id == int(current_batt_id):
             st.warning("任务已在当前战场")
         else:
-            supabase.table("tasks").update({"battlefield_id": int(target_bid)}).eq("id", int(task_id)).execute()
-            st.success(f"✅ 已转移至：{options[sel_idx]}")
+            supabase.table("tasks").update({"battlefield_id": selected_batt_id}).eq("id", int(task_id)).execute()
+            st.success(f"✅ 已转移至：{batt_options[selected_batt_id]}")
             time.sleep(0.5)
             force_refresh()
 
