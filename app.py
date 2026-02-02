@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V34.1",
+    page_title="颜祖美学·执行中枢 V34.2",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -85,7 +85,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v34_1_fix_keyerror")
+cookie_manager = stx.CookieManager(key="yanzu_v34_2_stable")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -93,12 +93,17 @@ def run_query(table_name):
     try:
         response = supabase.table(table_name).select("*").order("id", desc=False).execute()
         df = pd.DataFrame(response.data)
-        # 即使数据为空，也要确保有列名，防止KeyError
+        # 即使数据为空，也要确保返回一个空的DataFrame，而不是None
         if df.empty:
-            return df
+            return pd.DataFrame()
+        
+        # 尝试转换日期格式，如果失败则跳过
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
+                try:
+                    df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
+                except:
+                    pass
         return df
     except:
         return pd.DataFrame()
@@ -116,10 +121,13 @@ def update_announcement(text):
 
 def calculate_net_yvp(username, days_lookback=None):
     users = run_query("users")
-    if not users.empty and 'username' in users.columns:
-        user_row = users[users['username']==username]
-        if not user_row.empty and user_row.iloc[0]['role'] == 'admin':
-            return 0.0
+    # 安全检查：如果用户表没读出来，直接返回0
+    if users.empty or 'username' not in users.columns:
+        return 0.0
+        
+    user_row = users[users['username']==username]
+    if not user_row.empty and 'role' in user_row.columns and user_row.iloc[0]['role'] == 'admin':
+        return 0.0
 
     tasks = run_query("tasks")
     gross = 0.0
@@ -175,15 +183,15 @@ def calculate_net_yvp(username, days_lookback=None):
 
 def calculate_period_stats(start_date, end_date):
     users = run_query("users")
-    stats_data = []
-    
-    # 修复：安全检查
+    # 修复：防止KeyError
     if users.empty or 'role' not in users.columns:
-        return pd.DataFrame(columns=["成员", "任务产出", "罚款", "奖励", "💰 应发YVP"])
+        return pd.DataFrame()
 
     members = users[users['role'] != 'admin']['username'].tolist()
     
     tasks = run_query("tasks"); pens = run_query("penalties"); rews = run_query("rewards")
+    stats_data = []
+    
     ts_start = pd.Timestamp(start_date)
     ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
@@ -226,7 +234,7 @@ def calculate_period_stats(start_date, end_date):
                 reward_val = in_range_rews['amount'].sum()
         net = gross - fine + reward_val
         stats_data.append({"成员": m, "任务产出": round(gross, 2), "罚款": round(fine, 2), "奖励": round(reward_val, 2), "💰 应发YVP": round(net, 2)})
-    return pd.DataFrame(stats_data).sort_values("💰 应发YVP", ascending=False)
+    return pd.DataFrame(stats_data).sort_values("💰 应发YVP", ascending=False) if stats_data else pd.DataFrame()
 
 def format_deadline(d_val):
     if pd.isna(d_val) or str(d_val) in ['NaT', 'None', '']: return "♾️ 无期限"
@@ -627,9 +635,12 @@ elif nav == "🏰 个人中心":
             if st.button("📊 开始统计", type="primary"):
                 if d_start <= d_end:
                     report = calculate_period_stats(d_start, d_end)
-                    st.dataframe(report, use_container_width=True, hide_index=True)
-                    csv = report.to_csv(index=False).encode('utf-8')
-                    st.download_button("📥 下载报表", csv, f"yvp_report_{d_start}_{d_end}.csv", "text/csv")
+                    if not report.empty:
+                        st.dataframe(report, use_container_width=True, hide_index=True)
+                        csv = report.to_csv(index=False).encode('utf-8')
+                        st.download_button("📥 下载报表", csv, f"yvp_report_{d_start}_{d_end}.csv", "text/csv")
+                    else:
+                        st.warning("无数据或人员数据加载失败")
                 else: st.error("日期错误")
 
         with tabs[2]: # 发布
@@ -676,7 +687,11 @@ elif nav == "🏰 个人中心":
             assign = "待定"
             if ttype == "指派成员":
                 udf = run_query("users")
-                assign = st.selectbox("人员", udf['username'].tolist(), key="pub_ass")
+                # 修复：安全检查
+                user_list = []
+                if not udf.empty and 'username' in udf.columns:
+                    user_list = udf['username'].tolist()
+                assign = st.selectbox("人员", user_list, key="pub_ass")
                 
             if st.button("🚀 确认发布", type="primary", key="pub_btn"):
                 if sel_batt_id is None:
@@ -697,11 +712,11 @@ elif nav == "🏰 个人中心":
             cf1, cf2 = st.columns(2)
             
             # --- 修复：防止 KeyError ---
-            user_list = []
+            user_list = ["全部"]
             if not udf.empty and 'username' in udf.columns:
-                user_list = list(udf['username'].unique())
+                user_list += list(udf['username'].unique())
             
-            fu = cf1.selectbox("筛选人员", ["全部"] + user_list, key="mng_u")
+            fu = cf1.selectbox("筛选人员", user_list, key="mng_u")
             # --------------------------
             
             sk = cf2.text_input("搜标题", key="mng_k")
@@ -752,7 +767,11 @@ elif nav == "🏰 个人中心":
 
         with tabs[4]: # 🎁 人员与奖惩
             udf = run_query("users")
-            members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
+            # 修复：安全检查
+            members = []
+            if not udf.empty and 'role' in udf.columns:
+                members = udf[udf['role']!='admin']['username'].tolist()
+            
             c_p, c_r = st.columns(2)
             with c_p:
                 st.markdown("#### 🚨 考勤管理")
@@ -799,16 +818,18 @@ elif nav == "🏰 个人中心":
             else: st.info("暂无考勤/惩罚记录")
             st.divider()
             st.markdown("#### 👥 成员账号管理")
-            for i, m in udf[udf['role']!='admin'].iterrows():
-                with st.container(border=True):
-                    c_n, c_p, c_d = st.columns([2,2,1])
-                    c_n.write(f"**{m['username']}**")
-                    n_pass = c_p.text_input("重置密码", key=f"rp_{m['username']}")
-                    if c_p.button("重置", key=f"btn_rp_{m['username']}"):
-                        supabase.table("users").update({"password": n_pass}).eq("username", m['username']).execute(); st.toast("密码已改")
-                    with c_d.popover("驱逐"):
-                        if st.button("确认注销该成员", key=f"del_{m['username']}"):
-                            supabase.table("users").delete().eq("username", m['username']).execute(); st.rerun()
+            # 修复：安全检查
+            if not udf.empty and 'role' in udf.columns:
+                for i, m in udf[udf['role']!='admin'].iterrows():
+                    with st.container(border=True):
+                        c_n, c_p, c_d = st.columns([2,2,1])
+                        c_n.write(f"**{m['username']}**")
+                        n_pass = c_p.text_input("重置密码", key=f"rp_{m['username']}")
+                        if c_p.button("重置", key=f"btn_rp_{m['username']}"):
+                            supabase.table("users").update({"password": n_pass}).eq("username", m['username']).execute(); st.toast("密码已改")
+                        with c_d.popover("驱逐"):
+                            if st.button("确认注销该成员", key=f"del_{m['username']}"):
+                                supabase.table("users").delete().eq("username", m['username']).execute(); st.rerun()
 
         with tabs[5]: # 裁决
             pend = run_query("tasks")
