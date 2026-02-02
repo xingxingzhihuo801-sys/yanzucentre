@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V35.4",
+    page_title="颜祖美学·执行中枢 V35.5",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -25,8 +25,6 @@ st.markdown("""
         div[data-testid="stToolbar"] {visibility: hidden;}
         div[data-testid="stDecoration"] {visibility: hidden;}
         div[data-testid="stStatusWidget"] {visibility: hidden;}
-        
-        /* 滚动公告 */
         .scrolling-text {
             width: 100%;
             background-color: #fff3cd;
@@ -38,8 +36,6 @@ st.markdown("""
             margin-bottom: 10px;
             border-radius: 4px;
         }
-        
-        /* 标签样式 */
         .highlight-data {
             font-weight: bold;
             color: #31333F;
@@ -62,17 +58,15 @@ st.markdown("""
         .rnd-tag {
             font-size: 0.8em;
             color: #fff;
-            background-color: #6f42c1; /* 紫色代表研发 */
+            background-color: #6f42c1;
             padding: 2px 6px;
             border-radius: 4px;
             margin-right: 5px;
             font-weight: bold;
         }
-        
         .stButton button {
             width: 100%;
         }
-        
         div[data-testid="stExpander"] {
             border: 1px solid #e0e0e0;
             border-radius: 8px;
@@ -90,9 +84,9 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v35_4_shield")
+cookie_manager = stx.CookieManager(key="yanzu_v35_5_armor")
 
-# --- 4. 核心工具函数 ---
+# --- 4. 核心工具函数 (装甲级修复) ---
 @st.cache_data(ttl=2) 
 def run_query(table_name):
     try:
@@ -104,8 +98,20 @@ def run_query(table_name):
             pass 
         response = query.order("id", desc=False).execute()
         df = pd.DataFrame(response.data)
+        
+        # --- 核心修复：强制初始化空表的列名，防止KeyError ---
         if df.empty:
-            return pd.DataFrame()
+            if table_name == 'tasks':
+                return pd.DataFrame(columns=['id', 'title', 'battlefield_id', 'status', 'deadline', 'is_rnd', 'assignee', 'difficulty', 'std_time', 'quality', 'created_at', 'completed_at', 'description', 'feedback', 'type'])
+            elif table_name == 'campaigns':
+                return pd.DataFrame(columns=['id', 'title', 'deadline', 'order_index', 'status'])
+            elif table_name == 'battlefields':
+                return pd.DataFrame(columns=['id', 'title', 'campaign_id', 'order_index'])
+            elif table_name == 'users':
+                return pd.DataFrame(columns=['username', 'password', 'role'])
+            else:
+                return pd.DataFrame() # 其他表保持默认
+        # --------------------------------------------------
         
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
             if col in df.columns:
@@ -115,9 +121,11 @@ def run_query(table_name):
                     pass
         return df
     except:
+        # 万一连查都查不到，也返回带列名的空表，确保后续代码不崩
+        if table_name == 'tasks':
+             return pd.DataFrame(columns=['id', 'title', 'battlefield_id', 'status', 'deadline', 'is_rnd', 'assignee', 'difficulty', 'std_time', 'quality', 'created_at', 'completed_at', 'description', 'feedback', 'type'])
         return pd.DataFrame()
 
-# 强制刷新缓存
 def force_refresh():
     st.cache_data.clear()
     st.rerun()
@@ -505,7 +513,7 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 1. 战略作战室 (V35.4 修复版) ---
+# --- 1. 战略作战室 (V35.5 绝地重生版) ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
@@ -563,18 +571,26 @@ if nav == "🔭 战略作战室":
                         
                         st.divider()
                         if st.button("🗑️ 删除", key=f"del_c_{camp['id']}", type="primary"):
-                            has_batt = not batts[batts['campaign_id'] == camp['id']].empty
+                            has_batt = not batts.empty and not batts[batts['campaign_id'] == camp['id']].empty
                             if has_batt: st.error("请先清空战场！")
                             else: 
                                 supabase.table("campaigns").delete().eq("id", int(camp['id'])).execute()
                                 st.success("✅ 删除成功！"); force_refresh()
 
-                camp_batts = batts[batts['campaign_id'] == camp['id']]
-                if 'order_index' in camp_batts.columns:
-                    camp_batts = camp_batts.sort_values('order_index')
+                # --- 修复核心：安全过滤 ---
+                if not batts.empty:
+                    camp_batts = batts[batts['campaign_id'] == camp['id']]
+                    if 'order_index' in camp_batts.columns:
+                        camp_batts = camp_batts.sort_values('order_index')
+                else:
+                    camp_batts = pd.DataFrame()
                 
-                camp_batt_ids = camp_batts['id'].tolist()
-                camp_tasks = all_tasks[all_tasks['battlefield_id'].isin(camp_batt_ids)]
+                camp_tasks = pd.DataFrame()
+                if not all_tasks.empty and not camp_batts.empty:
+                    camp_batt_ids = camp_batts['id'].tolist()
+                    if 'battlefield_id' in all_tasks.columns:
+                        camp_tasks = all_tasks[all_tasks['battlefield_id'].isin(camp_batt_ids)]
+                
                 if not camp_tasks.empty:
                     done_count = len(camp_tasks[camp_tasks['status'] == '完成'])
                     total_count = len(camp_tasks)
@@ -599,7 +615,12 @@ if nav == "🔭 战略作战室":
                                 
                                 st.divider()
                                 if st.button("🗑️ 删除", key=f"bdel_{batt['id']}", type="primary"):
-                                    if not all_tasks[all_tasks['battlefield_id'] == batt['id']].empty:
+                                    has_task = False
+                                    if not all_tasks.empty and 'battlefield_id' in all_tasks.columns:
+                                         if not all_tasks[all_tasks['battlefield_id'] == batt['id']].empty:
+                                             has_task = True
+                                    
+                                    if has_task:
                                         st.error("请先清空任务！")
                                     else:
                                         supabase.table("battlefields").delete().eq("id", int(batt['id'])).execute()
@@ -610,11 +631,15 @@ if nav == "🔭 战略作战室":
                                 if st.button("➕ 在此发布任务", key=f"qp_btn_{batt['id']}"):
                                     quick_publish_modal(camp['id'], batt['id'], batt['title'])
 
-                            b_tasks = all_tasks[all_tasks['battlefield_id'] == batt['id']]
+                            b_tasks = pd.DataFrame()
+                            if not all_tasks.empty and 'battlefield_id' in all_tasks.columns:
+                                b_tasks = all_tasks[all_tasks['battlefield_id'] == batt['id']]
+                            
                             if not b_tasks.empty:
                                 b_done = len(b_tasks[b_tasks['status'] == '完成'])
                                 b_prog = b_done / len(b_tasks)
                                 st.progress(b_prog, text="战场进度")
+                                
                                 active_bt = b_tasks[b_tasks['status'].isin(['待领取', '进行中', '返工', '待验收'])]
                                 if not active_bt.empty:
                                     for idx, task in active_bt.iterrows():
@@ -660,7 +685,7 @@ elif nav == "📋 任务大厅":
         except: return label_html + "未知"
 
     st.subheader("🔥 待抢任务池")
-    if not tdf.empty:
+    if not tdf.empty and 'status' in tdf.columns:
         pool = tdf[(tdf['status']=='待领取') & (tdf['type']=='公共任务池')]
         if not pool.empty:
             cols = st.columns(3)
@@ -687,7 +712,6 @@ elif nav == "📋 任务大厅":
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("🔭 实时动态 (最近35条)")
-        # 修复点：增加判空，防止KeyError
         if not tdf.empty and 'status' in tdf.columns:
             active = tdf[tdf['status'].isin(['进行中', '返工', '待验收'])].sort_values("created_at", ascending=False).head(35)
             if not active.empty:
@@ -700,7 +724,6 @@ elif nav == "📋 任务大厅":
             
     with c2:
         st.subheader("📜 荣誉记录 (最近35条)")
-        # 修复点：增加判空
         if not tdf.empty and 'status' in tdf.columns:
             done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
             if not done.empty:
@@ -730,7 +753,7 @@ elif nav == "🏰 个人中心":
             st.divider()
             st.subheader("🛡️ 进行中")
             tdf = run_query("tasks")
-            if not tdf.empty:
+            if not tdf.empty and 'status' in tdf.columns:
                 my_adm = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中')]
                 for i, r in my_adm.iterrows():
                     with st.container(border=True):
@@ -771,12 +794,19 @@ elif nav == "🏰 个人中心":
             st.markdown("---")
             st.markdown("⚔️ **战略归属**")
             sc1, sc2 = st.columns(2)
-            camp_opts = camps['title'].tolist()
+            camp_opts = camps['title'].tolist() if not camps.empty else []
+            if not camp_opts:
+                st.warning("请先建立战役！")
+                st.stop()
+                
             def_c_idx = 0
             sel_camp_t = sc1.selectbox("所属战役 (Campaign)", camp_opts, index=def_c_idx, key="pub_sel_camp")
             sel_camp_id = camps[camps['title']==sel_camp_t].iloc[0]['id']
             
-            batt_opts_df = batts[batts['campaign_id'] == sel_camp_id]
+            batt_opts_df = pd.DataFrame()
+            if not batts.empty:
+                batt_opts_df = batts[batts['campaign_id'] == sel_camp_id]
+            
             if not batt_opts_df.empty:
                 batt_opts = batt_opts_df['title'].tolist()
                 sel_batt_t = sc2.selectbox("所属战场 (Battlefield)", batt_opts, key="pub_sel_batt")
@@ -838,8 +868,10 @@ elif nav == "🏰 个人中心":
             
             sk = cf2.text_input("搜标题", key="mng_k")
             fil = tdf.copy()
-            if fu != "全部": fil = fil[fil['assignee'] == fu]
-            if sk: fil = fil[fil['title'].str.contains(sk, case=False, na=False)]
+            if not fil.empty:
+                if fu != "全部": fil = fil[fil['assignee'] == fu]
+                if sk: fil = fil[fil['title'].str.contains(sk, case=False, na=False)]
+            
             if not fil.empty:
                 tid = st.selectbox("选择任务", fil['id'], format_func=lambda x: f"ID:{x}|{fil[fil['id']==x]['title'].values[0]}", key="mng_sel")
                 tar = fil[fil['id']==tid].iloc[0]
@@ -950,22 +982,24 @@ elif nav == "🏰 个人中心":
 
         with tabs[5]: # 裁决
             pend = run_query("tasks")
-            pend = pend[pend['status'] == '待验收']
-            if not pend.empty:
-                sel_p = st.selectbox("待审任务", pend['id'], format_func=lambda x: pend[pend['id']==x]['title'].values[0])
-                with st.container(border=True):
-                    res = st.selectbox("裁决结果", ["完成", "返工"])
-                    if res == "完成":
-                        qual = st.slider("质量评分", 0.0, 3.0, 1.0, 0.1)
-                    else:
-                        st.warning("⚠️ 返工任务不打分，直接退回给成员。")
-                        qual = None 
-                    fb = st.text_area("御批反馈")
-                    if st.button("提交审核"):
-                        cat = str(datetime.date.today()) if res=="完成" else None
-                        q_val = qual if res=="完成" else 0.0
-                        supabase.table("tasks").update({"quality": q_val, "status": res, "feedback": fb, "completed_at": cat}).eq("id", int(sel_p)).execute()
-                        show_success_modal("裁决已提交！")
+            if not pend.empty and 'status' in pend.columns:
+                pend = pend[pend['status'] == '待验收']
+                if not pend.empty:
+                    sel_p = st.selectbox("待审任务", pend['id'], format_func=lambda x: pend[pend['id']==x]['title'].values[0])
+                    with st.container(border=True):
+                        res = st.selectbox("裁决结果", ["完成", "返工"])
+                        if res == "完成":
+                            qual = st.slider("质量评分", 0.0, 3.0, 1.0, 0.1)
+                        else:
+                            st.warning("⚠️ 返工任务不打分，直接退回给成员。")
+                            qual = None 
+                        fb = st.text_area("御批反馈")
+                        if st.button("提交审核"):
+                            cat = str(datetime.date.today()) if res=="完成" else None
+                            q_val = qual if res=="完成" else 0.0
+                            supabase.table("tasks").update({"quality": q_val, "status": res, "feedback": fb, "completed_at": cat}).eq("id", int(sel_p)).execute()
+                            show_success_modal("裁决已提交！")
+                else: st.info("暂无待审任务")
             else: st.info("暂无待审任务")
 
         with tabs[6]: # 公告
