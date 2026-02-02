@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V35.3",
+    page_title="颜祖美学·执行中枢 V35.4",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -90,21 +90,18 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v35_3_thunder")
+cookie_manager = stx.CookieManager(key="yanzu_v35_4_shield")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
 def run_query(table_name):
     try:
-        # V35.3 优化：优先按 order_index 排序，其次按 ID
         query = supabase.table(table_name).select("*")
-        
-        # 尝试按 order_index 排序 (如果数据库加了字段)
+        # 尝试按 order_index 排序
         try:
             query = query.order("order_index", desc=False)
         except:
-            pass # 如果没加字段，忽略报错，回退到默认
-            
+            pass 
         response = query.order("id", desc=False).execute()
         df = pd.DataFrame(response.data)
         if df.empty:
@@ -120,7 +117,7 @@ def run_query(table_name):
     except:
         return pd.DataFrame()
 
-# 强制刷新缓存的辅助函数
+# 强制刷新缓存
 def force_refresh():
     st.cache_data.clear()
     st.rerun()
@@ -358,12 +355,11 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
         }).execute()
         st.success("发布成功！"); force_refresh()
 
-# --- 任务调动弹窗 (优化：支持全战役/全战场) ---
+# --- 任务调动弹窗 ---
 @st.dialog("🔀 调动任务 (全域)")
 def move_task_modal(task_id, task_title, current_batt_id):
     st.markdown(f"正在调动任务：**{task_title}**")
     
-    # 获取所有战役和战场
     all_camps = run_query("campaigns")
     all_batts = run_query("battlefields")
     
@@ -371,17 +367,12 @@ def move_task_modal(task_id, task_title, current_batt_id):
         st.error("数据加载失败，无法调动")
         return
 
-    # 构建完整的选项列表: "战役名 > 战场名"
-    # 使用字典映射 ID -> 显示名称
     camp_map = {row['id']: row['title'] for _, row in all_camps.iterrows()}
     
-    options = [] # 显示文本列表
-    opt_ids = [] # 对应的战场ID列表
+    options = [] 
+    opt_ids = [] 
     
     current_idx = 0
-    
-    # 遍历所有战场，构建选项
-    # 按战役ID排序，保证视觉整洁
     sorted_batts = all_batts.sort_values(by='campaign_id')
     
     for i, (_, batt) in enumerate(sorted_batts.iterrows()):
@@ -514,11 +505,11 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 1. 战略作战室 (V35.3 极速刷新版) ---
+# --- 1. 战略作战室 (V35.4 修复版) ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
-    # 数据加载 (带排序)
+    # 数据加载
     camps = run_query("campaigns")
     batts = run_query("battlefields")
     all_tasks = run_query("tasks")
@@ -537,7 +528,6 @@ if nav == "🔭 战略作战室":
                 with st.popover("🚩 新建战役 (Campaign)"):
                     new_camp_t = st.text_input("战役名称")
                     new_camp_d = st.date_input("战役截止", value=None)
-                    # 排序字段
                     new_camp_idx = st.number_input("排序权重 (越小越前)", value=0, step=1)
                     if st.button("确立战役"):
                          d_val = str(new_camp_d) if new_camp_d else None
@@ -548,18 +538,15 @@ if nav == "🔭 战略作战室":
     
     st.divider()
     
-    # 战役渲染 (已按 order_index 排序)
+    # 战役渲染
     if not camps.empty:
-        # camps = camps.sort_values('order_index') # run_query已处理
         for _, camp in camps.iterrows():
             with st.container(border=True):
-                # 战役头部
                 c1, c2, c3 = st.columns([3, 1.5, 0.5])
                 status_icon = "👑" if camp['id'] == -1 else "🚩"
                 c1.subheader(f"{status_icon} {camp['title']}")
                 if camp['deadline']: c2.caption(f"🏁 截止: {camp['deadline']}")
                 
-                # 战役编辑 (仅编辑模式)
                 if edit_mode and role == 'admin' and camp['id'] != -1:
                     with c3.popover("⚙️"):
                         st.write("**编辑战役**")
@@ -582,9 +569,7 @@ if nav == "🔭 战略作战室":
                                 supabase.table("campaigns").delete().eq("id", int(camp['id'])).execute()
                                 st.success("✅ 删除成功！"); force_refresh()
 
-                # 进度条
                 camp_batts = batts[batts['campaign_id'] == camp['id']]
-                # 确保战场也按 order_index 排序
                 if 'order_index' in camp_batts.columns:
                     camp_batts = camp_batts.sort_values('order_index')
                 
@@ -597,13 +582,10 @@ if nav == "🔭 战略作战室":
                     st.progress(prog, text=f"战役总进度: {int(prog*100)}% ({done_count}/{total_count})")
                 else: st.progress(0, text="整备中...")
 
-                # 战场循环
                 if not camp_batts.empty:
                     for _, batt in camp_batts.iterrows():
-                        # 战场头部布局
                         bc1, bc2 = st.columns([0.9, 0.1])
                         
-                        # 战场编辑 (仅编辑模式)
                         if edit_mode and role == 'admin' and batt['id'] != -1:
                             with bc2.popover("⚙️", key=f"b_pop_{batt['id']}"):
                                 eb_t = st.text_input("战场名称", value=batt['title'], key=f"ebt_{batt['id']}")
@@ -629,12 +611,10 @@ if nav == "🔭 战略作战室":
                                     quick_publish_modal(camp['id'], batt['id'], batt['title'])
 
                             b_tasks = all_tasks[all_tasks['battlefield_id'] == batt['id']]
-                            
                             if not b_tasks.empty:
                                 b_done = len(b_tasks[b_tasks['status'] == '完成'])
                                 b_prog = b_done / len(b_tasks)
                                 st.progress(b_prog, text="战场进度")
-                                
                                 active_bt = b_tasks[b_tasks['status'].isin(['待领取', '进行中', '返工', '待验收'])]
                                 if not active_bt.empty:
                                     for idx, task in active_bt.iterrows():
@@ -643,7 +623,6 @@ if nav == "🔭 战略作战室":
                                             t_icon = "🟣" if task.get('is_rnd') else "⚔️"
                                             t_dead = format_deadline(task.get('deadline'))
                                             st.markdown(f"**{t_icon} {task['title']}** <span style='color:grey;font-size:0.8em'>({task['assignee']} | {task['status']} | 📅 {t_dead})</span>", unsafe_allow_html=True)
-                                        
                                         if edit_mode and role == 'admin':
                                             with cols_task[1]:
                                                 if st.button("🔀", key=f"mv_{task['id']}", help="全域调动"):
@@ -651,7 +630,6 @@ if nav == "🔭 战略作战室":
                                 else: st.caption("暂无活跃任务")
                             else: st.caption("战场整备中")
 
-                # 战役底部：新增战场
                 if edit_mode and role == 'admin':
                     cid_safe = int(camp['id'])
                     with st.expander("➕ 开辟新战场", expanded=False):
@@ -709,17 +687,30 @@ elif nav == "📋 任务大厅":
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("🔭 实时动态 (最近35条)")
-        active = tdf[tdf['status'].isin(['进行中', '返工', '待验收'])].sort_values("created_at", ascending=False).head(35)
-        if not active.empty:
-            active['Deadline'] = active['deadline'].apply(format_deadline)
-            st.dataframe(active[['title', 'assignee', 'status', 'Deadline']], use_container_width=True, hide_index=True)
+        # 修复点：增加判空，防止KeyError
+        if not tdf.empty and 'status' in tdf.columns:
+            active = tdf[tdf['status'].isin(['进行中', '返工', '待验收'])].sort_values("created_at", ascending=False).head(35)
+            if not active.empty:
+                active['Deadline'] = active['deadline'].apply(format_deadline)
+                st.dataframe(active[['title', 'assignee', 'status', 'Deadline']], use_container_width=True, hide_index=True)
+            else:
+                st.caption("暂无活跃任务")
+        else:
+            st.caption("暂无数据或数据加载中...")
+            
     with c2:
         st.subheader("📜 荣誉记录 (最近35条)")
-        done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
-        if not done.empty:
-            done['P'] = done.apply(lambda x: "研发任务" if x.get('is_rnd') else f"D{x['difficulty']}/T{x['std_time']}/Q{x['quality']}", axis=1)
-            done['💰 获益'] = done.apply(lambda x: 0 if x.get('is_rnd') else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
-            st.dataframe(done[['title', 'assignee', 'P', '💰 获益']], use_container_width=True, hide_index=True)
+        # 修复点：增加判空
+        if not tdf.empty and 'status' in tdf.columns:
+            done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
+            if not done.empty:
+                done['P'] = done.apply(lambda x: "研发任务" if x.get('is_rnd') else f"D{x['difficulty']}/T{x['std_time']}/Q{x['quality']}", axis=1)
+                done['💰 获益'] = done.apply(lambda x: 0 if x.get('is_rnd') else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
+                st.dataframe(done[['title', 'assignee', 'P', '💰 获益']], use_container_width=True, hide_index=True)
+            else:
+                st.caption("暂无完成记录")
+        else:
+            st.caption("暂无数据或数据加载中...")
 
 elif nav == "🏰 个人中心":
     if role == 'admin':
@@ -739,16 +730,17 @@ elif nav == "🏰 个人中心":
             st.divider()
             st.subheader("🛡️ 进行中")
             tdf = run_query("tasks")
-            my_adm = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中')]
-            for i, r in my_adm.iterrows():
-                with st.container(border=True):
-                    ic1, ic2 = st.columns([4, 1])
-                    with ic1:
-                        st.markdown(f"**{r['title']}**")
-                        st.write(f"📅 **截止**: {format_deadline(r.get('deadline'))}")
-                    if ic2.button("✅ 完成", key=f"fin_{r['id']}"):
-                        supabase.table("tasks").update({"status": "完成", "quality": 1.0, "completed_at": str(datetime.date.today()), "feedback": "统帅自结"}).eq("id", int(r['id'])).execute()
-                        show_success_modal("任务已归档！")
+            if not tdf.empty:
+                my_adm = tdf[(tdf['assignee'] == user) & (tdf['status'] == '进行中')]
+                for i, r in my_adm.iterrows():
+                    with st.container(border=True):
+                        ic1, ic2 = st.columns([4, 1])
+                        with ic1:
+                            st.markdown(f"**{r['title']}**")
+                            st.write(f"📅 **截止**: {format_deadline(r.get('deadline'))}")
+                        if ic2.button("✅ 完成", key=f"fin_{r['id']}"):
+                            supabase.table("tasks").update({"status": "完成", "quality": 1.0, "completed_at": str(datetime.date.today()), "feedback": "统帅自结"}).eq("id", int(r['id'])).execute()
+                            show_success_modal("任务已归档！")
             show_task_history(user, role)
 
         with tabs[1]: # 分润
