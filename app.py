@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V35.2",
+    page_title="颜祖美学·执行中枢 V35.3",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -73,7 +73,6 @@ st.markdown("""
             width: 100%;
         }
         
-        /* 编辑模式下的高亮边框 */
         div[data-testid="stExpander"] {
             border: 1px solid #e0e0e0;
             border-radius: 8px;
@@ -91,13 +90,22 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v35_2_feedback")
+cookie_manager = stx.CookieManager(key="yanzu_v35_3_thunder")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
 def run_query(table_name):
     try:
-        response = supabase.table(table_name).select("*").order("id", desc=False).execute()
+        # V35.3 优化：优先按 order_index 排序，其次按 ID
+        query = supabase.table(table_name).select("*")
+        
+        # 尝试按 order_index 排序 (如果数据库加了字段)
+        try:
+            query = query.order("order_index", desc=False)
+        except:
+            pass # 如果没加字段，忽略报错，回退到默认
+            
+        response = query.order("id", desc=False).execute()
         df = pd.DataFrame(response.data)
         if df.empty:
             return pd.DataFrame()
@@ -111,6 +119,11 @@ def run_query(table_name):
         return df
     except:
         return pd.DataFrame()
+
+# 强制刷新缓存的辅助函数
+def force_refresh():
+    st.cache_data.clear()
+    st.rerun()
 
 def get_announcement():
     try:
@@ -343,37 +356,54 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
             "deadline": None if no_d else str(d_inp), "type": ttype, 
             "battlefield_id": int(batt_id), "is_rnd": is_rnd_task
         }).execute()
-        st.success("发布成功！"); time.sleep(1); st.rerun()
+        st.success("发布成功！"); force_refresh()
 
-# --- 任务调动弹窗 ---
-@st.dialog("🔀 调动任务")
-def move_task_modal(task_id, task_title, current_batt_id, all_batts_df):
+# --- 任务调动弹窗 (优化：支持全战役/全战场) ---
+@st.dialog("🔀 调动任务 (全域)")
+def move_task_modal(task_id, task_title, current_batt_id):
     st.markdown(f"正在调动任务：**{task_title}**")
-    opts = []
-    opt_ids = []
     
-    camps = run_query("campaigns")
+    # 获取所有战役和战场
+    all_camps = run_query("campaigns")
+    all_batts = run_query("battlefields")
     
-    for _, b in all_batts_df.iterrows():
-        c_title = "未知战役"
-        if not camps.empty:
-            c_rows = camps[camps['id'] == b['campaign_id']]
-            if not c_rows.empty:
-                c_title = c_rows.iloc[0]['title']
+    if all_camps.empty or all_batts.empty:
+        st.error("数据加载失败，无法调动")
+        return
+
+    # 构建完整的选项列表: "战役名 > 战场名"
+    # 使用字典映射 ID -> 显示名称
+    camp_map = {row['id']: row['title'] for _, row in all_camps.iterrows()}
+    
+    options = [] # 显示文本列表
+    opt_ids = [] # 对应的战场ID列表
+    
+    current_idx = 0
+    
+    # 遍历所有战场，构建选项
+    # 按战役ID排序，保证视觉整洁
+    sorted_batts = all_batts.sort_values(by='campaign_id')
+    
+    for i, (_, batt) in enumerate(sorted_batts.iterrows()):
+        c_title = camp_map.get(batt['campaign_id'], "未知战役")
+        if batt['campaign_id'] == -1: c_title = "👑 统帅直辖"
         
-        opts.append(f"{c_title}  👉  {b['title']}")
-        opt_ids.append(b['id'])
-    
-    curr_idx = 0
-    if current_batt_id in opt_ids:
-        curr_idx = opt_ids.index(current_batt_id)
+        display_text = f"{c_title}  👉  {batt['title']}"
+        options.append(display_text)
+        opt_ids.append(batt['id'])
         
-    sel_idx = st.selectbox("选择新战场", range(len(opts)), format_func=lambda x: opts[x], index=curr_idx)
+        if batt['id'] == current_batt_id:
+            current_idx = i
+    
+    sel_idx = st.selectbox("选择目标归属", range(len(options)), format_func=lambda x: options[x], index=current_idx)
     target_bid = opt_ids[sel_idx]
     
-    if st.button("确认调动", type="primary"):
-        supabase.table("tasks").update({"battlefield_id": int(target_bid)}).eq("id", int(task_id)).execute()
-        st.toast(f"✅ 任务【{task_title}】调动成功！"); time.sleep(0.5); st.rerun()
+    if st.button("🚀 立即调动", type="primary"):
+        if target_bid == current_batt_id:
+            st.warning("任务已在当前战场，无需调动")
+        else:
+            supabase.table("tasks").update({"battlefield_id": int(target_bid)}).eq("id", int(task_id)).execute()
+            st.success(f"✅ 已转移至：{options[sel_idx]}"); force_refresh()
 
 
 QUOTES = [
@@ -484,11 +514,11 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 1. 战略作战室 (V35.2 反馈修复版) ---
+# --- 1. 战略作战室 (V35.3 极速刷新版) ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
-    # 数据加载
+    # 数据加载 (带排序)
     camps = run_query("campaigns")
     batts = run_query("battlefields")
     all_tasks = run_query("tasks")
@@ -500,23 +530,27 @@ if nav == "🔭 战略作战室":
         with col_mode:
             edit_mode = st.toggle("👁️ 开启上帝视角 (编辑/调动模式)", value=False)
             if edit_mode:
-                st.info("🔥 您已进入指挥模式：可直接发布任务、移动任务、修改架构。")
+                st.info("🔥 指挥模式已激活：支持全域调动、排序调整、极速编辑。")
         
         with col_create:
             if edit_mode:
                 with st.popover("🚩 新建战役 (Campaign)"):
                     new_camp_t = st.text_input("战役名称")
                     new_camp_d = st.date_input("战役截止", value=None)
+                    # 排序字段
+                    new_camp_idx = st.number_input("排序权重 (越小越前)", value=0, step=1)
                     if st.button("确立战役"):
                          d_val = str(new_camp_d) if new_camp_d else None
-                         supabase.table("campaigns").insert({"title": new_camp_t, "deadline": d_val}).execute()
-                         st.success("✅ 战役已建立！"); time.sleep(1); st.rerun()
+                         supabase.table("campaigns").insert({
+                             "title": new_camp_t, "deadline": d_val, "order_index": new_camp_idx
+                         }).execute()
+                         st.success("✅ 战役建立成功！"); force_refresh()
     
     st.divider()
     
-    # 战役渲染
+    # 战役渲染 (已按 order_index 排序)
     if not camps.empty:
-        camps = camps.sort_values('id')
+        # camps = camps.sort_values('order_index') # run_query已处理
         for _, camp in camps.iterrows():
             with st.container(border=True):
                 # 战役头部
@@ -531,20 +565,29 @@ if nav == "🔭 战略作战室":
                         st.write("**编辑战役**")
                         ec_t = st.text_input("名称", value=camp['title'], key=f"ec_{camp['id']}")
                         ec_d = st.date_input("截止", value=camp['deadline'] if camp['deadline'] else None, key=f"ecd_{camp['id']}")
+                        ec_idx = st.number_input("排序权重", value=int(camp.get('order_index', 0)), step=1, key=f"ecidx_{camp['id']}")
+                        
                         if st.button("保存", key=f"sv_c_{camp['id']}"):
                             d_val = str(ec_d) if ec_d else None
-                            supabase.table("campaigns").update({"title": ec_t, "deadline": d_val}).eq("id", int(camp['id'])).execute()
-                            st.success("✅ 保存成功！"); time.sleep(1); st.rerun()
+                            supabase.table("campaigns").update({
+                                "title": ec_t, "deadline": d_val, "order_index": ec_idx
+                            }).eq("id", int(camp['id'])).execute()
+                            st.success("✅ 更新成功！"); force_refresh()
+                        
                         st.divider()
                         if st.button("🗑️ 删除", key=f"del_c_{camp['id']}", type="primary"):
                             has_batt = not batts[batts['campaign_id'] == camp['id']].empty
                             if has_batt: st.error("请先清空战场！")
                             else: 
                                 supabase.table("campaigns").delete().eq("id", int(camp['id'])).execute()
-                                st.success("✅ 战役已删除！"); time.sleep(1); st.rerun()
+                                st.success("✅ 删除成功！"); force_refresh()
 
                 # 进度条
                 camp_batts = batts[batts['campaign_id'] == camp['id']]
+                # 确保战场也按 order_index 排序
+                if 'order_index' in camp_batts.columns:
+                    camp_batts = camp_batts.sort_values('order_index')
+                
                 camp_batt_ids = camp_batts['id'].tolist()
                 camp_tasks = all_tasks[all_tasks['battlefield_id'].isin(camp_batt_ids)]
                 if not camp_tasks.empty:
@@ -564,27 +607,29 @@ if nav == "🔭 战略作战室":
                         if edit_mode and role == 'admin' and batt['id'] != -1:
                             with bc2.popover("⚙️", key=f"b_pop_{batt['id']}"):
                                 eb_t = st.text_input("战场名称", value=batt['title'], key=f"ebt_{batt['id']}")
+                                eb_idx = st.number_input("排序", value=int(batt.get('order_index', 0)), step=1, key=f"ebidx_{batt['id']}")
+                                
                                 if st.button("保存", key=f"bsv_{batt['id']}"):
-                                    supabase.table("battlefields").update({"title": eb_t}).eq("id", int(batt['id'])).execute()
-                                    st.success("✅ 战场名称已更新"); time.sleep(1); st.rerun()
+                                    supabase.table("battlefields").update({
+                                        "title": eb_t, "order_index": eb_idx
+                                    }).eq("id", int(batt['id'])).execute()
+                                    st.success("✅ 更新成功"); force_refresh()
+                                
                                 st.divider()
                                 if st.button("🗑️ 删除", key=f"bdel_{batt['id']}", type="primary"):
                                     if not all_tasks[all_tasks['battlefield_id'] == batt['id']].empty:
                                         st.error("请先清空任务！")
                                     else:
                                         supabase.table("battlefields").delete().eq("id", int(batt['id'])).execute()
-                                        st.success("✅ 战场已删除"); time.sleep(1); st.rerun()
+                                        st.success("✅ 删除成功"); force_refresh()
 
                         with bc1.expander(f"🛡️ {batt['title']}", expanded=True):
-                            # 编辑模式下：添加任务按钮
                             if edit_mode and role == 'admin':
                                 if st.button("➕ 在此发布任务", key=f"qp_btn_{batt['id']}"):
                                     quick_publish_modal(camp['id'], batt['id'], batt['title'])
 
-                            # 战场内任务
                             b_tasks = all_tasks[all_tasks['battlefield_id'] == batt['id']]
                             
-                            # 战场进度
                             if not b_tasks.empty:
                                 b_done = len(b_tasks[b_tasks['status'] == '完成'])
                                 b_prog = b_done / len(b_tasks)
@@ -592,11 +637,8 @@ if nav == "🔭 战略作战室":
                                 
                                 active_bt = b_tasks[b_tasks['status'].isin(['待领取', '进行中', '返工', '待验收'])]
                                 if not active_bt.empty:
-                                    # 任务卡片式渲染 (支持调动)
                                     for idx, task in active_bt.iterrows():
-                                        # 布局：任务信息 | 调动按钮(仅编辑模式)
                                         cols_task = st.columns([0.85, 0.15]) if edit_mode else [st.container()]
-                                        
                                         with cols_task[0]:
                                             t_icon = "🟣" if task.get('is_rnd') else "⚔️"
                                             t_dead = format_deadline(task.get('deadline'))
@@ -604,21 +646,22 @@ if nav == "🔭 战略作战室":
                                         
                                         if edit_mode and role == 'admin':
                                             with cols_task[1]:
-                                                if st.button("🔀", key=f"mv_{task['id']}", help="调动此任务到其他战场"):
-                                                    move_task_modal(task['id'], task['title'], batt['id'], batts)
-                                else:
-                                    st.caption("暂无活跃任务")
-                            else:
-                                st.caption("战场整备中")
+                                                if st.button("🔀", key=f"mv_{task['id']}", help="全域调动"):
+                                                    move_task_modal(task['id'], task['title'], batt['id'])
+                                else: st.caption("暂无活跃任务")
+                            else: st.caption("战场整备中")
 
-                # 战役底部：新增战场 (仅编辑模式 - 修复点：使用Expander替代Popover以防崩溃 + 成功回馈)
+                # 战役底部：新增战场
                 if edit_mode and role == 'admin':
                     cid_safe = int(camp['id'])
                     with st.expander("➕ 开辟新战场", expanded=False):
                         nb_t = st.text_input("新战场名称", key=f"nbt_{cid_safe}")
+                        nb_idx = st.number_input("排序权重", value=0, step=1, key=f"nbidx_{cid_safe}")
                         if st.button("确认开辟", key=f"nb_btn_{cid_safe}"):
-                            supabase.table("battlefields").insert({"campaign_id": cid_safe, "title": nb_t}).execute()
-                            st.success("✅ 战场开辟成功！"); time.sleep(1); st.rerun()
+                            supabase.table("battlefields").insert({
+                                "campaign_id": cid_safe, "title": nb_t, "order_index": nb_idx
+                            }).execute()
+                            st.success("✅ 开辟成功！"); force_refresh()
 
 elif nav == "📋 任务大厅":
     st.header("🛡️ 任务大厅")
