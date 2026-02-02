@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V34.0",
+    page_title="颜祖美学·执行中枢 V34.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -69,7 +69,6 @@ st.markdown("""
             font-weight: bold;
         }
         
-        /* 优化输入框间距 */
         .stButton button {
             width: 100%;
         }
@@ -86,14 +85,17 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v34_rnd_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v34_1_fix_keyerror")
 
 # --- 4. 核心工具函数 ---
-@st.cache_data(ttl=2) # 缩短缓存时间以适应频繁编辑
+@st.cache_data(ttl=2) 
 def run_query(table_name):
     try:
         response = supabase.table(table_name).select("*").order("id", desc=False).execute()
         df = pd.DataFrame(response.data)
+        # 即使数据为空，也要确保有列名，防止KeyError
+        if df.empty:
+            return df
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
@@ -114,7 +116,7 @@ def update_announcement(text):
 
 def calculate_net_yvp(username, days_lookback=None):
     users = run_query("users")
-    if not users.empty:
+    if not users.empty and 'username' in users.columns:
         user_row = users[users['username']==username]
         if not user_row.empty and user_row.iloc[0]['role'] == 'admin':
             return 0.0
@@ -122,14 +124,11 @@ def calculate_net_yvp(username, days_lookback=None):
     tasks = run_query("tasks")
     gross = 0.0
     if not tasks.empty:
-        # 只计算完成的任务，且排除研发任务（研发任务通常不计件，或者默认为0）
         my_done = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
         if not my_done.empty:
-            # 兼容旧数据，fillna处理
             if 'is_rnd' not in my_done.columns: my_done['is_rnd'] = False
             else: my_done['is_rnd'] = my_done['is_rnd'].fillna(False)
 
-            # 研发任务收益默认为0 (由薪资覆盖)，常规任务按公式计算
             my_done['val'] = my_done.apply(lambda x: 0.0 if x['is_rnd'] else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
             
             my_done['completed_at'] = pd.to_datetime(my_done['completed_at'])
@@ -152,7 +151,6 @@ def calculate_net_yvp(username, days_lookback=None):
                 if not tasks.empty:
                     base_tasks = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
                     if not base_tasks.empty:
-                        # 同样处理is_rnd
                         if 'is_rnd' not in base_tasks.columns: base_tasks['is_rnd'] = False
                         else: base_tasks['is_rnd'] = base_tasks['is_rnd'].fillna(False)
                         
@@ -177,8 +175,14 @@ def calculate_net_yvp(username, days_lookback=None):
 
 def calculate_period_stats(start_date, end_date):
     users = run_query("users")
-    members = users[users['role'] != 'admin']['username'].tolist()
     stats_data = []
+    
+    # 修复：安全检查
+    if users.empty or 'role' not in users.columns:
+        return pd.DataFrame(columns=["成员", "任务产出", "罚款", "奖励", "💰 应发YVP"])
+
+    members = users[users['role'] != 'admin']['username'].tolist()
+    
     tasks = run_query("tasks"); pens = run_query("penalties"); rews = run_query("rewards")
     ts_start = pd.Timestamp(start_date)
     ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
@@ -193,8 +197,6 @@ def calculate_period_stats(start_date, end_date):
                 
                 m_tasks['completed_at'] = pd.to_datetime(m_tasks['completed_at'])
                 in_range = m_tasks[(m_tasks['completed_at'] >= ts_start) & (m_tasks['completed_at'] <= ts_end)]
-                
-                # 排除研发任务计算YVP
                 gross = in_range[in_range['is_rnd']==False].apply(lambda x: x['difficulty'] * x['std_time'] * x['quality'], axis=1).sum()
         
         fine = 0.0
@@ -212,7 +214,6 @@ def calculate_period_stats(start_date, end_date):
                             else: all_m_tasks['is_rnd'] = all_m_tasks['is_rnd'].fillna(False)
                             
                             all_m_tasks['completed_at'] = pd.to_datetime(all_m_tasks['completed_at'])
-                            # 计算回溯期产出
                             w_tasks = all_m_tasks[(all_m_tasks['completed_at'] >= w_start) & (all_m_tasks['completed_at'] <= p['occurred_at'])]
                             w_val = w_tasks[w_tasks['is_rnd']==False].apply(lambda x: x['difficulty'] * x['std_time'] * x['quality'], axis=1).sum()
                             fine += w_val * 0.2
@@ -408,7 +409,7 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 1. 战略作战室 (新增修改/删除功能) ---
+# --- 1. 战略作战室 ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
@@ -432,19 +433,17 @@ if nav == "🔭 战略作战室":
         camps = camps.sort_values('id')
         for _, camp in camps.iterrows():
             with st.container(border=True):
-                # 头部布局：标题 + 截止日 + 管理按钮
                 ch1, ch2, ch3 = st.columns([3, 1.5, 0.5])
                 status_icon = "👑" if camp['id'] == -1 else "🚩"
                 ch1.subheader(f"{status_icon} {camp['title']}")
                 if camp['deadline']:
                     ch2.caption(f"🏁 截止: {camp['deadline']}")
                 
-                # 战役管理 (Pop-over)
-                if role == 'admin' and camp['id'] != -1: # 统帅直辖不可删
+                # 战役管理
+                if role == 'admin' and camp['id'] != -1:
                     with ch3.popover("⚙️", help="管理战役"):
                         st.write("**编辑战役**")
                         edit_c_t = st.text_input("名称", value=camp['title'], key=f"ec_t_{camp['id']}")
-                        # Handle date formatting for input
                         default_d = camp['deadline'] if camp['deadline'] else None
                         edit_c_d = st.date_input("截止", value=default_d, key=f"ec_d_{camp['id']}")
                         
@@ -456,8 +455,6 @@ if nav == "🔭 战略作战室":
                         st.divider()
                         st.write("**危险区**")
                         if st.button("🗑️ 删除战役", key=f"del_c_{camp['id']}", type="primary"):
-                            # 先删下面的战场，再删战役，任务会自动归入NULL(或者需要手动处理，这里简单处理，建议先清空)
-                            # 为了数据安全，若有战场，禁止删除
                             has_batt = not batts[batts['campaign_id'] == camp['id']].empty
                             if has_batt:
                                 st.error("请先删除或清空该战役下的所有战场！")
@@ -465,7 +462,7 @@ if nav == "🔭 战略作战室":
                                 supabase.table("campaigns").delete().eq("id", int(camp['id'])).execute()
                                 st.rerun()
 
-                # 战役进度
+                # 进度
                 camp_batts = batts[batts['campaign_id'] == camp['id']]
                 camp_batt_ids = camp_batts['id'].tolist()
                 camp_tasks = all_tasks[all_tasks['battlefield_id'].isin(camp_batt_ids)]
@@ -478,15 +475,12 @@ if nav == "🔭 战略作战室":
                 else:
                     st.progress(0, text="战役整备中...")
 
-                # 战场展示
                 if not camp_batts.empty:
                     for _, batt in camp_batts.iterrows():
-                        # 使用 columns 布局战场标题和管理按钮
                         b_col1, b_col2 = st.columns([0.95, 0.05])
                         with b_col1:
                              expander = st.expander(f"🛡️ 战场: {batt['title']}", expanded=True)
                         
-                        # 战场管理
                         if role == 'admin' and batt['id'] != -1:
                              with b_col2.popover("⚙️", key=f"pop_b_{batt['id']}"):
                                 st.caption(f"管理: {batt['title']}")
@@ -496,7 +490,6 @@ if nav == "🔭 战略作战室":
                                     st.rerun()
                                 st.divider()
                                 if st.button("🗑️ 删除", key=f"del_b_{batt['id']}", type="primary"):
-                                    # 检查是否有任务
                                     has_task = not all_tasks[all_tasks['battlefield_id'] == batt['id']].empty
                                     if has_task:
                                         st.error("请先清空或转移该战场下的任务！")
@@ -522,7 +515,6 @@ if nav == "🔭 战略作战室":
                                 else: col_stat.markdown("🟡 **推进中**")
                                 active_bt = b_tasks[b_tasks['status'].isin(['待领取', '进行中', '返工', '待验收'])]
                                 if not active_bt.empty:
-                                    # 简单展示时，如果有研发任务，标题加个标
                                     active_bt['Display Title'] = active_bt.apply(lambda x: f"🟣 {x['title']}" if x.get('is_rnd') else x['title'], axis=1)
                                     st.dataframe(active_bt[['Display Title', 'assignee', 'status', 'deadline']], use_container_width=True, hide_index=True)
                                 else: st.caption("当前无活跃任务")
@@ -546,13 +538,8 @@ elif nav == "📋 任务大厅":
     
     def get_task_label(bid, is_rnd=False):
         label_html = ""
-        if is_rnd:
-            label_html += "<span class='rnd-tag'>🟣 产品研发</span>"
-        
-        if pd.isna(bid): 
-            label_html += "未归类"
-            return label_html
-            
+        if is_rnd: label_html += "<span class='rnd-tag'>🟣 产品研发</span>"
+        if pd.isna(bid): return label_html + "未归类"
         try:
             b_row = batts[batts['id'] == bid].iloc[0]
             c_row = camps[camps['id'] == b_row['campaign_id']].iloc[0]
@@ -571,12 +558,8 @@ elif nav == "📋 任务大厅":
                     with st.container(border=True):
                         st.markdown(get_task_label(row.get('battlefield_id'), row.get('is_rnd')), unsafe_allow_html=True)
                         st.markdown(f"**{row['title']}**")
-                        
-                        if row.get('is_rnd'):
-                             st.caption("🟣 研发任务 (不计工时)")
-                        else:
-                             st.write(f"⚙️ **难度**: {row['difficulty']} | ⏱️ **工时**: {row['std_time']}")
-                        
+                        if row.get('is_rnd'): st.caption("🟣 研发任务 (不计工时)")
+                        else: st.write(f"⚙️ **难度**: {row['difficulty']} | ⏱️ **工时**: {row['std_time']}")
                         st.write(f"📅 **截止**: {format_deadline(row.get('deadline'))}")
                         with st.expander("👁️ 查看详情"):
                             st.write(row.get('description', '无详情'))
@@ -649,7 +632,7 @@ elif nav == "🏰 个人中心":
                     st.download_button("📥 下载报表", csv, f"yvp_report_{d_start}_{d_end}.csv", "text/csv")
                 else: st.error("日期错误")
 
-        with tabs[2]: # 发布 (修改：支持研发任务)
+        with tabs[2]: # 发布
             camps = run_query("campaigns")
             batts = run_query("battlefields")
             
@@ -675,8 +658,6 @@ elif nav == "🏰 个人中心":
                 sel_batt_id = None
 
             st.markdown("---")
-            
-            # --- 新增：研发任务开关 ---
             is_rnd_task = st.checkbox("🟣 标记为【产品研发任务】(无需填工时/难度)", key="pub_is_rnd")
 
             col_d, col_c = c1.columns([3,2])
@@ -706,15 +687,23 @@ elif nav == "🏰 个人中心":
                         "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign, 
                         "deadline": None if no_d else str(d_inp), "type": ttype, 
                         "battlefield_id": int(sel_batt_id),
-                        "is_rnd": is_rnd_task # 写入标记
+                        "is_rnd": is_rnd_task
                     }).execute()
                     show_success_modal("任务发布成功！")
 
-        with tabs[3]: # 全量管理 (修改：支持研发任务)
+        with tabs[3]: # 全量管理 (修复KEY ERROR)
             st.subheader("🛠️ 精准修正")
             tdf = run_query("tasks"); udf = run_query("users")
             cf1, cf2 = st.columns(2)
-            fu = cf1.selectbox("筛选人员", ["全部"] + list(udf['username'].unique()), key="mng_u")
+            
+            # --- 修复：防止 KeyError ---
+            user_list = []
+            if not udf.empty and 'username' in udf.columns:
+                user_list = list(udf['username'].unique())
+            
+            fu = cf1.selectbox("筛选人员", ["全部"] + user_list, key="mng_u")
+            # --------------------------
+            
             sk = cf2.text_input("搜标题", key="mng_k")
             fil = tdf.copy()
             if fu != "全部": fil = fil[fil['assignee'] == fu]
@@ -723,11 +712,9 @@ elif nav == "🏰 个人中心":
                 tid = st.selectbox("选择任务", fil['id'], format_func=lambda x: f"ID:{x}|{fil[fil['id']==x]['title'].values[0]}", key="mng_sel")
                 tar = fil[fil['id']==tid].iloc[0]
                 with st.container(border=True):
-                    # 编辑区域
                     new_title = st.text_input("标题", tar['title'], key=f"et_{tid}")
                     new_desc = st.text_area("详情", tar.get('description', ''), key=f"edesc_{tid}")
                     
-                    # 研发标记编辑
                     curr_is_rnd = tar.get('is_rnd', False)
                     edit_is_rnd = st.checkbox("🟣 产品研发任务", value=curr_is_rnd, key=f"e_rnd_{tid}")
                     
@@ -895,9 +882,7 @@ elif nav == "🏰 个人中心":
             try:
                 b_row = batts[batts['id'] == bid].iloc[0]
                 c_row = camps[camps['id'] == b_row['campaign_id']].iloc[0]
-                style_class = "strat-tag"
-                if c_row['id'] == -1: style_class = "strat-tag" 
-                else: style_class = "strat-tag strat-tag-active" 
+                style_class = "strat-tag" if c_row['id'] == -1 else "strat-tag strat-tag-active"
                 label_html += f"<span class='{style_class}'>{c_row['title']} / {b_row['title']}</span>"
                 return label_html
             except: return label_html + "未知"
