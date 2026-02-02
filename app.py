@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V35.0",
+    page_title="颜祖美学·执行中枢 V35.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -91,7 +91,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v35_godmode")
+cookie_manager = stx.CookieManager(key="yanzu_v35_1_fix")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -349,14 +349,9 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
 @st.dialog("🔀 调动任务")
 def move_task_modal(task_id, task_title, current_batt_id, all_batts_df):
     st.markdown(f"正在调动任务：**{task_title}**")
-    # 构建选项
-    # Format: "CampaignTitle - BattleTitle"
-    # Need to join with campaigns ideally, but here we can just show battle titles if complexity is high
-    # Let's try to map nicely
     opts = []
     opt_ids = []
     
-    # 获取战役信息辅助显示
     camps = run_query("campaigns")
     
     for _, b in all_batts_df.iterrows():
@@ -369,7 +364,6 @@ def move_task_modal(task_id, task_title, current_batt_id, all_batts_df):
         opts.append(f"{c_title}  👉  {b['title']}")
         opt_ids.append(b['id'])
     
-    # Find current index
     curr_idx = 0
     if current_batt_id in opt_ids:
         curr_idx = opt_ids.index(current_batt_id)
@@ -490,7 +484,7 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 1. 战略作战室 (V35 全面升级) ---
+# --- 1. 战略作战室 (V35.1 修复版) ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
@@ -617,12 +611,14 @@ if nav == "🔭 战略作战室":
                             else:
                                 st.caption("战场整备中")
 
-                # 战役底部：新增战场 (仅编辑模式)
+                # 战役底部：新增战场 (仅编辑模式 - 修复点：使用Expander替代Popover以防崩溃)
                 if edit_mode and role == 'admin':
-                    with st.popover("➕ 开辟新战场", key=f"add_b_pop_{camp['id']}"):
-                        nb_t = st.text_input("新战场名称", key=f"nbt_{camp['id']}")
-                        if st.button("确认开辟", key=f"nb_btn_{camp['id']}"):
-                            supabase.table("battlefields").insert({"campaign_id": int(camp['id']), "title": nb_t}).execute()
+                    # 使用 expander 替代 popover，并强制转换 ID 为 int 确保 key 安全
+                    cid_safe = int(camp['id'])
+                    with st.expander("➕ 开辟新战场", expanded=False):
+                        nb_t = st.text_input("新战场名称", key=f"nbt_{cid_safe}")
+                        if st.button("确认开辟", key=f"nb_btn_{cid_safe}"):
+                            supabase.table("battlefields").insert({"campaign_id": cid_safe, "title": nb_t}).execute()
                             st.rerun()
 
 elif nav == "📋 任务大厅":
