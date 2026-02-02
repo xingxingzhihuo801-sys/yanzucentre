@@ -9,12 +9,13 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V33.0",
+    page_title="颜祖美学·执行中枢 V34.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
 
+# --- CSS 美化 ---
 st.markdown("""
     <style>
         #MainMenu {visibility: hidden;}
@@ -24,14 +25,8 @@ st.markdown("""
         div[data-testid="stToolbar"] {visibility: hidden;}
         div[data-testid="stDecoration"] {visibility: hidden;}
         div[data-testid="stStatusWidget"] {visibility: hidden;}
-        div[data-testid="stRadio"] > div {
-            flex-direction: row;
-            justify-content: center;
-            background-color: #f8f9fa;
-            padding: 10px;
-            border-radius: 8px;
-            border: 1px solid #dee2e6;
-        }
+        
+        /* 滚动公告 */
         .scrolling-text {
             width: 100%;
             background-color: #fff3cd;
@@ -41,8 +36,10 @@ st.markdown("""
             font-weight: bold;
             border-bottom: 1px solid #ffeeba;
             margin-bottom: 10px;
+            border-radius: 4px;
         }
-        /* 数据高亮标签 */
+        
+        /* 标签样式 */
         .highlight-data {
             font-weight: bold;
             color: #31333F;
@@ -51,7 +48,6 @@ st.markdown("""
             border-radius: 4px;
             border: 1px solid #d2e3fc;
         }
-        /* 战略标签 */
         .strat-tag {
             font-size: 0.8em;
             color: #fff;
@@ -62,6 +58,20 @@ st.markdown("""
         }
         .strat-tag-active {
             background-color: #0d6efd; 
+        }
+        .rnd-tag {
+            font-size: 0.8em;
+            color: #fff;
+            background-color: #6f42c1; /* 紫色代表研发 */
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-right: 5px;
+            font-weight: bold;
+        }
+        
+        /* 优化输入框间距 */
+        .stButton button {
+            width: 100%;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -76,13 +86,13 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v33_strat_mgr")
+cookie_manager = stx.CookieManager(key="yanzu_v34_rnd_mgr")
 
 # --- 4. 核心工具函数 ---
-@st.cache_data(ttl=3)
+@st.cache_data(ttl=2) # 缩短缓存时间以适应频繁编辑
 def run_query(table_name):
     try:
-        response = supabase.table(table_name).select("*").execute()
+        response = supabase.table(table_name).select("*").order("id", desc=False).execute()
         df = pd.DataFrame(response.data)
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at']:
             if col in df.columns:
@@ -112,9 +122,16 @@ def calculate_net_yvp(username, days_lookback=None):
     tasks = run_query("tasks")
     gross = 0.0
     if not tasks.empty:
+        # 只计算完成的任务，且排除研发任务（研发任务通常不计件，或者默认为0）
         my_done = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
         if not my_done.empty:
-            my_done['val'] = my_done['difficulty'] * my_done['std_time'] * my_done['quality']
+            # 兼容旧数据，fillna处理
+            if 'is_rnd' not in my_done.columns: my_done['is_rnd'] = False
+            else: my_done['is_rnd'] = my_done['is_rnd'].fillna(False)
+
+            # 研发任务收益默认为0 (由薪资覆盖)，常规任务按公式计算
+            my_done['val'] = my_done.apply(lambda x: 0.0 if x['is_rnd'] else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
+            
             my_done['completed_at'] = pd.to_datetime(my_done['completed_at'])
             if days_lookback:
                 cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
@@ -135,7 +152,12 @@ def calculate_net_yvp(username, days_lookback=None):
                 if not tasks.empty:
                     base_tasks = tasks[(tasks['assignee'] == username) & (tasks['status'] == '完成')].copy()
                     if not base_tasks.empty:
-                        base_tasks['val'] = base_tasks['difficulty'] * base_tasks['std_time'] * base_tasks['quality']
+                        # 同样处理is_rnd
+                        if 'is_rnd' not in base_tasks.columns: base_tasks['is_rnd'] = False
+                        else: base_tasks['is_rnd'] = base_tasks['is_rnd'].fillna(False)
+                        
+                        base_tasks['val'] = base_tasks.apply(lambda x: 0.0 if x['is_rnd'] else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
+                        
                         base_tasks['completed_at'] = pd.to_datetime(base_tasks['completed_at'])
                         w_tasks = base_tasks[(base_tasks['completed_at'] >= w_start) & (base_tasks['completed_at'] <= pen['occurred_at'])]
                         total_fine += w_tasks['val'].sum() * 0.2
@@ -166,9 +188,15 @@ def calculate_period_stats(start_date, end_date):
         if not tasks.empty:
             m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
             if not m_tasks.empty:
+                if 'is_rnd' not in m_tasks.columns: m_tasks['is_rnd'] = False
+                else: m_tasks['is_rnd'] = m_tasks['is_rnd'].fillna(False)
+                
                 m_tasks['completed_at'] = pd.to_datetime(m_tasks['completed_at'])
                 in_range = m_tasks[(m_tasks['completed_at'] >= ts_start) & (m_tasks['completed_at'] <= ts_end)]
-                gross = (in_range['difficulty'] * in_range['std_time'] * in_range['quality']).sum()
+                
+                # 排除研发任务计算YVP
+                gross = in_range[in_range['is_rnd']==False].apply(lambda x: x['difficulty'] * x['std_time'] * x['quality'], axis=1).sum()
+        
         fine = 0.0
         if not pens.empty:
             m_pens = pens[(pens['username'] == m)].copy()
@@ -180,10 +208,14 @@ def calculate_period_stats(start_date, end_date):
                     if not tasks.empty:
                         all_m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
                         if not all_m_tasks.empty:
+                            if 'is_rnd' not in all_m_tasks.columns: all_m_tasks['is_rnd'] = False
+                            else: all_m_tasks['is_rnd'] = all_m_tasks['is_rnd'].fillna(False)
+                            
                             all_m_tasks['completed_at'] = pd.to_datetime(all_m_tasks['completed_at'])
-                            all_m_tasks['val'] = all_m_tasks['difficulty'] * all_m_tasks['std_time'] * all_m_tasks['quality']
+                            # 计算回溯期产出
                             w_tasks = all_m_tasks[(all_m_tasks['completed_at'] >= w_start) & (all_m_tasks['completed_at'] <= p['occurred_at'])]
-                            fine += w_tasks['val'].sum() * 0.2
+                            w_val = w_tasks[w_tasks['is_rnd']==False].apply(lambda x: x['difficulty'] * x['std_time'] * x['quality'], axis=1).sum()
+                            fine += w_val * 0.2
         reward_val = 0.0
         if not rews.empty:
             m_rews = rews[rews['username'] == m].copy()
@@ -206,16 +238,21 @@ def show_task_history(username, role):
     if df.empty:
         st.info("暂无数据")
         return
+    
     my_history = df[(df['assignee'] == username) & (df['status'] == '完成')].copy()
+    if 'is_rnd' not in my_history.columns: my_history['is_rnd'] = False
+    
     if my_history.empty:
         st.info("暂无已完成的任务记录")
     else:
         my_history['completed_at'] = pd.to_datetime(my_history['completed_at'])
         my_history['Month'] = my_history['completed_at'].dt.strftime('%Y-%m')
+        
         c_search, c_filter = st.columns(2)
         search_kw = c_search.text_input("🔍 搜索任务标题", key=f"hist_search_{username}")
         month_list = ["全部"] + sorted(my_history['Month'].unique().tolist(), reverse=True)
         month_sel = c_filter.selectbox("🗓️ 按月份筛选", month_list, key=f"hist_filter_{username}")
+        
         filtered_df = my_history.copy()
         is_filtered = False
         if month_sel != "全部": 
@@ -235,13 +272,22 @@ def show_task_history(username, role):
         if not display_df.empty:
             for i, r in display_df.iterrows():
                 with st.container(border=True):
-                    st.markdown(f"**✅ {r['title']}**")
+                    rnd_mark = "🟣 [研发] " if r.get('is_rnd') else ""
+                    st.markdown(f"**✅ {rnd_mark}{r['title']}**")
                     c1, c2, c3, c4 = st.columns(4)
-                    c1.markdown(f"⚙️ 难度: <span class='highlight-data'>{r['difficulty']}</span>", unsafe_allow_html=True)
-                    c2.markdown(f"⏱️ 工时: <span class='highlight-data'>{r['std_time']}</span>", unsafe_allow_html=True)
-                    c3.markdown(f"🌟 质量: <span class='highlight-data'>{r['quality']}</span>", unsafe_allow_html=True)
-                    earned = r['difficulty'] * r['std_time'] * r['quality']
-                    c4.markdown(f"💰 获益: <span class='highlight-data' style='background-color:#fff3cd; color:#856404;'>{round(earned, 2)}</span>", unsafe_allow_html=True)
+                    
+                    if r.get('is_rnd'):
+                        c1.markdown("⚙️ 难度: <span class='highlight-data'>N/A</span>", unsafe_allow_html=True)
+                        c2.markdown("⏱️ 工时: <span class='highlight-data'>N/A</span>", unsafe_allow_html=True)
+                        c3.markdown(f"🌟 质量: <span class='highlight-data'>{r['quality']}</span>", unsafe_allow_html=True)
+                        c4.markdown(f"💰 获益: <span class='highlight-data' style='background-color:#f3e5f5; color:#4a148c;'>研发不计</span>", unsafe_allow_html=True)
+                    else:
+                        c1.markdown(f"⚙️ 难度: <span class='highlight-data'>{r['difficulty']}</span>", unsafe_allow_html=True)
+                        c2.markdown(f"⏱️ 工时: <span class='highlight-data'>{r['std_time']}</span>", unsafe_allow_html=True)
+                        c3.markdown(f"🌟 质量: <span class='highlight-data'>{r['quality']}</span>", unsafe_allow_html=True)
+                        earned = r['difficulty'] * r['std_time'] * r['quality']
+                        c4.markdown(f"💰 获益: <span class='highlight-data' style='background-color:#fff3cd; color:#856404;'>{round(earned, 2)}</span>", unsafe_allow_html=True)
+                    
                     st.caption(f"📅 归档日期: {r['completed_at'].date()}")
                     with st.expander("📝 详情与御批"):
                         st.write(f"**任务详情**: {r.get('description', '无')}")
@@ -338,7 +384,6 @@ if not st.session_state.alert_shown and role != 'admin':
             show_alerts(my_alerts)
             st.session_state.alert_shown = True
 
-# --- 更新导航栏 ---
 nav = st.radio("NAV", ["🔭 战略作战室", "📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"], horizontal=True, label_visibility="collapsed")
 st.divider()
 
@@ -363,16 +408,14 @@ with st.sidebar:
 
 # ================= 业务路由 =================
 
-# --- 新增页面：战略作战室 ---
+# --- 1. 战略作战室 (新增修改/删除功能) ---
 if nav == "🔭 战略作战室":
     st.header("🔭 战略作战室 (Strategy War Room)")
     
-    # 1. 顶部：战役总览 (Campaigns)
     camps = run_query("campaigns")
     batts = run_query("battlefields")
     all_tasks = run_query("tasks")
     
-    # 管理员创建战役
     if role == 'admin':
         with st.expander("🚩 发起新战役 (Campaign)", expanded=False):
             c1, c2 = st.columns([3, 1])
@@ -385,22 +428,44 @@ if nav == "🔭 战略作战室":
     
     st.divider()
     
-    # 2. 展示战役列表
     if not camps.empty:
-        # 将统帅直辖置顶
         camps = camps.sort_values('id')
-        
         for _, camp in camps.iterrows():
-            # 战役卡片容器
             with st.container(border=True):
-                # 战役头部
-                cc1, cc2 = st.columns([4, 1])
+                # 头部布局：标题 + 截止日 + 管理按钮
+                ch1, ch2, ch3 = st.columns([3, 1.5, 0.5])
                 status_icon = "👑" if camp['id'] == -1 else "🚩"
-                cc1.subheader(f"{status_icon} {camp['title']}")
+                ch1.subheader(f"{status_icon} {camp['title']}")
                 if camp['deadline']:
-                    cc2.caption(f"🏁 截止: {camp['deadline']}")
+                    ch2.caption(f"🏁 截止: {camp['deadline']}")
                 
-                # 计算该战役总进度
+                # 战役管理 (Pop-over)
+                if role == 'admin' and camp['id'] != -1: # 统帅直辖不可删
+                    with ch3.popover("⚙️", help="管理战役"):
+                        st.write("**编辑战役**")
+                        edit_c_t = st.text_input("名称", value=camp['title'], key=f"ec_t_{camp['id']}")
+                        # Handle date formatting for input
+                        default_d = camp['deadline'] if camp['deadline'] else None
+                        edit_c_d = st.date_input("截止", value=default_d, key=f"ec_d_{camp['id']}")
+                        
+                        if st.button("保存修改", key=f"save_c_{camp['id']}"):
+                             d_val = str(edit_c_d) if edit_c_d else None
+                             supabase.table("campaigns").update({"title": edit_c_t, "deadline": d_val}).eq("id", int(camp['id'])).execute()
+                             st.rerun()
+                        
+                        st.divider()
+                        st.write("**危险区**")
+                        if st.button("🗑️ 删除战役", key=f"del_c_{camp['id']}", type="primary"):
+                            # 先删下面的战场，再删战役，任务会自动归入NULL(或者需要手动处理，这里简单处理，建议先清空)
+                            # 为了数据安全，若有战场，禁止删除
+                            has_batt = not batts[batts['campaign_id'] == camp['id']].empty
+                            if has_batt:
+                                st.error("请先删除或清空该战役下的所有战场！")
+                            else:
+                                supabase.table("campaigns").delete().eq("id", int(camp['id'])).execute()
+                                st.rerun()
+
+                # 战役进度
                 camp_batts = batts[batts['campaign_id'] == camp['id']]
                 camp_batt_ids = camp_batts['id'].tolist()
                 camp_tasks = all_tasks[all_tasks['battlefield_id'].isin(camp_batt_ids)]
@@ -413,52 +478,59 @@ if nav == "🔭 战略作战室":
                 else:
                     st.progress(0, text="战役整备中...")
 
-                # 3. 战场展示 (Battlefields)
+                # 战场展示
                 if not camp_batts.empty:
                     for _, batt in camp_batts.iterrows():
-                        with st.expander(f"🛡️ 战场: {batt['title']}", expanded=True):
-                            # 战场内任务
+                        # 使用 columns 布局战场标题和管理按钮
+                        b_col1, b_col2 = st.columns([0.95, 0.05])
+                        with b_col1:
+                             expander = st.expander(f"🛡️ 战场: {batt['title']}", expanded=True)
+                        
+                        # 战场管理
+                        if role == 'admin' and batt['id'] != -1:
+                             with b_col2.popover("⚙️", key=f"pop_b_{batt['id']}"):
+                                st.caption(f"管理: {batt['title']}")
+                                edit_b_t = st.text_input("名称", value=batt['title'], key=f"eb_t_{batt['id']}")
+                                if st.button("保存", key=f"save_b_{batt['id']}"):
+                                    supabase.table("battlefields").update({"title": edit_b_t}).eq("id", int(batt['id'])).execute()
+                                    st.rerun()
+                                st.divider()
+                                if st.button("🗑️ 删除", key=f"del_b_{batt['id']}", type="primary"):
+                                    # 检查是否有任务
+                                    has_task = not all_tasks[all_tasks['battlefield_id'] == batt['id']].empty
+                                    if has_task:
+                                        st.error("请先清空或转移该战场下的任务！")
+                                    else:
+                                        supabase.table("battlefields").delete().eq("id", int(batt['id'])).execute()
+                                        st.rerun()
+
+                        with expander:
                             b_tasks = all_tasks[all_tasks['battlefield_id'] == batt['id']]
-                            
-                            # 进度条
                             if not b_tasks.empty:
                                 b_done = len(b_tasks[b_tasks['status'] == '完成'])
                                 b_total = len(b_tasks)
                                 b_prog = b_done / b_total
                                 col_p, col_stat = st.columns([3, 1])
                                 col_p.progress(b_prog, text=f"战场进度")
-                                
-                                # 健康度监测
                                 overdue = 0
                                 for _, t in b_tasks.iterrows():
                                     if t['deadline'] and str(t['deadline']) != 'NaT':
                                         if pd.to_datetime(t['deadline']).date() < datetime.date.today() and t['status'] != '完成':
                                             overdue += 1
-                                if overdue > 0:
-                                    col_stat.markdown(f"🔴 **{overdue} 任务逾期**")
-                                elif b_prog == 1.0:
-                                    col_stat.markdown("🟢 **大捷**")
-                                else:
-                                    col_stat.markdown("🟡 **推进中**")
-                                    
-                                # 显示任务简报
+                                if overdue > 0: col_stat.markdown(f"🔴 **{overdue} 任务逾期**")
+                                elif b_prog == 1.0: col_stat.markdown("🟢 **大捷**")
+                                else: col_stat.markdown("🟡 **推进中**")
                                 active_bt = b_tasks[b_tasks['status'].isin(['待领取', '进行中', '返工', '待验收'])]
                                 if not active_bt.empty:
-                                    st.dataframe(active_bt[['title', 'assignee', 'status', 'deadline']], use_container_width=True, hide_index=True)
-                                else:
-                                    st.caption("当前无活跃任务")
-                            else:
-                                st.caption("战场整备中，暂无任务")
-                                
-                            # 管理员添加任务/关闭战场
+                                    # 简单展示时，如果有研发任务，标题加个标
+                                    active_bt['Display Title'] = active_bt.apply(lambda x: f"🟣 {x['title']}" if x.get('is_rnd') else x['title'], axis=1)
+                                    st.dataframe(active_bt[['Display Title', 'assignee', 'status', 'deadline']], use_container_width=True, hide_index=True)
+                                else: st.caption("当前无活跃任务")
+                            else: st.caption("战场整备中，暂无任务")
                             if role == 'admin':
                                 if st.button("➕ 在此战场发布任务", key=f"add_t_b_{batt['id']}"):
-                                    st.session_state['pub_camp_idx'] = camp['id'] # 预设
-                                    st.session_state['pub_batt_idx'] = batt['id']
-                                    st.switch_page("app.py") # 简单刷新，引导去个人中心发布（由于Streamlit机制，这里做简单跳转提示更稳）
-                                    st.toast("请前往'个人中心-发布任务'，系统已为您预选该战场。")
+                                    st.toast("请前往'个人中心-发布任务'，请手动选择该战场。")
 
-                # 管理员添加战场
                 if role == 'admin':
                     c_add_b1, c_add_b2 = st.columns([3, 1])
                     new_b_name = c_add_b1.text_input("新战场名称", key=f"new_b_input_{camp['id']}", placeholder="例如：内容组 / 投流组")
@@ -469,22 +541,25 @@ if nav == "🔭 战略作战室":
 elif nav == "📋 任务大厅":
     st.header("🛡️ 任务大厅")
     tdf = run_query("tasks")
-    # 获取战场信息用于展示标签
     batts = run_query("battlefields")
     camps = run_query("campaigns")
     
-    # 辅助函数：获取任务标签
-    def get_task_label(bid):
-        if pd.isna(bid): return "未归类"
+    def get_task_label(bid, is_rnd=False):
+        label_html = ""
+        if is_rnd:
+            label_html += "<span class='rnd-tag'>🟣 产品研发</span>"
+        
+        if pd.isna(bid): 
+            label_html += "未归类"
+            return label_html
+            
         try:
             b_row = batts[batts['id'] == bid].iloc[0]
             c_row = camps[camps['id'] == b_row['campaign_id']].iloc[0]
-            # 样式区分
-            style_class = "strat-tag"
-            if c_row['id'] == -1: style_class = "strat-tag" # 灰色
-            else: style_class = "strat-tag strat-tag-active" # 蓝色
-            return f"<span class='{style_class}'>{c_row['title']} / {b_row['title']}</span>"
-        except: return "未知"
+            style_class = "strat-tag" if c_row['id'] == -1 else "strat-tag strat-tag-active"
+            label_html += f"<span class='{style_class}'>{c_row['title']} / {b_row['title']}</span>"
+            return label_html
+        except: return label_html + "未知"
 
     st.subheader("🔥 待抢任务池")
     if not tdf.empty:
@@ -494,10 +569,14 @@ elif nav == "📋 任务大厅":
             for i, (idx, row) in enumerate(pool.iterrows()):
                 with cols[i % 3]:
                     with st.container(border=True):
-                        # 标签
-                        st.markdown(get_task_label(row.get('battlefield_id')), unsafe_allow_html=True)
+                        st.markdown(get_task_label(row.get('battlefield_id'), row.get('is_rnd')), unsafe_allow_html=True)
                         st.markdown(f"**{row['title']}**")
-                        st.write(f"⚙️ **难度**: {row['difficulty']} | ⏱️ **工时**: {row['std_time']}")
+                        
+                        if row.get('is_rnd'):
+                             st.caption("🟣 研发任务 (不计工时)")
+                        else:
+                             st.write(f"⚙️ **难度**: {row['difficulty']} | ⏱️ **工时**: {row['std_time']}")
+                        
                         st.write(f"📅 **截止**: {format_deadline(row.get('deadline'))}")
                         with st.expander("👁️ 查看详情"):
                             st.write(row.get('description', '无详情'))
@@ -522,52 +601,9 @@ elif nav == "📋 任务大厅":
         st.subheader("📜 荣誉记录 (最近35条)")
         done = tdf[tdf['status']=='完成'].sort_values('completed_at', ascending=False).head(35)
         if not done.empty:
-            done['P'] = done.apply(lambda x: f"D{x['difficulty']}/T{x['std_time']}/Q{x['quality']}", axis=1)
-            done['💰 获益'] = done['difficulty'] * done['std_time'] * done['quality']
+            done['P'] = done.apply(lambda x: "研发任务" if x.get('is_rnd') else f"D{x['difficulty']}/T{x['std_time']}/Q{x['quality']}", axis=1)
+            done['💰 获益'] = done.apply(lambda x: 0 if x.get('is_rnd') else (x['difficulty'] * x['std_time'] * x['quality']), axis=1)
             st.dataframe(done[['title', 'assignee', 'P', '💰 获益']], use_container_width=True, hide_index=True)
-
-elif nav == "🗣️ 颜祖广场":
-    st.header("🗣️ 颜祖广场")
-    with st.expander("✍️ 发布寄语"):
-        txt = st.text_area("输入内容")
-        if st.button("发布"):
-            supabase.table("messages").insert({"username": user, "content": txt, "created_at": str(datetime.datetime.now())}).execute()
-            st.rerun()
-    msgs = run_query("messages")
-    if not msgs.empty:
-        msgs = msgs[msgs['username'] != '__NOTICE__'].sort_values("created_at", ascending=False).head(50)
-        for i, m in msgs.iterrows():
-            with st.chat_message("user", avatar="💬"):
-                st.write(f"**{m['username']}**: {m['content']}")
-
-elif nav == "🏆 风云榜":
-    st.header("🏆 荣誉榜单")
-    udf = run_query("users")
-    if not udf.empty:
-        members = udf[udf['role'] != 'admin']['username'].tolist()
-        def get_lb(days):
-            data = [{"成员": m, "YVP": calculate_net_yvp(m, days)} for m in members]
-            return pd.DataFrame(data).sort_values("YVP", ascending=False)
-        t1, t2, t3 = st.tabs(["📅 过去7天", "🗓️ 过去30天", "🔥 历史总榜"])
-        with t1: st.dataframe(get_lb(7), use_container_width=True, hide_index=True)
-        with t2: st.dataframe(get_lb(30), use_container_width=True, hide_index=True)
-        with t3: st.dataframe(get_lb(None), use_container_width=True, hide_index=True)
-    st.divider()
-    c_r1, c_r2 = st.columns(2)
-    with c_r1:
-        st.subheader("🏆 功勋簿 (最近10条)")
-        rews = run_query("rewards")
-        if not rews.empty:
-            rews_show = rews.sort_values("created_at", ascending=False).head(10)
-            st.dataframe(rews_show[['username', 'amount', 'reason', 'created_at']], use_container_width=True, hide_index=True)
-        else: st.caption("暂无奖励记录")
-    with c_r2:
-        st.subheader("🚨 警示录 (最近10条)")
-        pens = run_query("penalties")
-        if not pens.empty:
-            pens_show = pens.sort_values("occurred_at", ascending=False).head(10)
-            st.dataframe(pens_show[['username', 'reason', 'occurred_at']], use_container_width=True, hide_index=True)
-        else: st.caption("全员全勤，继续保持！")
 
 elif nav == "🏰 个人中心":
     if role == 'admin':
@@ -582,7 +618,6 @@ elif nav == "🏰 个人中心":
             quick_t = qc1.text_input("内容", key="adm_q_t")
             quick_d = qc2.date_input("截止", value=None, key="adm_q_d")
             if st.button("派发给我", type="primary", key="adm_q_btn"):
-                # 默认归入日常
                 supabase.table("tasks").insert({"title": quick_t, "difficulty": 0, "std_time": 0, "status": "进行中", "assignee": user, "type": "AdminSelf", "deadline": str(quick_d) if quick_d else None, "battlefield_id": -1}).execute()
                 show_success_modal("已添加到您的战场（默认归入日常运营）")
             st.divider()
@@ -602,7 +637,7 @@ elif nav == "🏰 个人中心":
 
         with tabs[1]: # 分润
             st.subheader("💰 周期分润统计")
-            st.info("含任务产出、罚款扣除及奖励加成。")
+            st.info("含任务产出(排除研发任务)、罚款扣除及奖励加成。")
             c_d1, c_d2 = st.columns(2)
             d_start = c_d1.date_input("开始日期", value=datetime.date.today().replace(day=1), key="stats_d1")
             d_end = c_d2.date_input("结束日期", value=datetime.date.today(), key="stats_d2")
@@ -614,7 +649,7 @@ elif nav == "🏰 个人中心":
                     st.download_button("📥 下载报表", csv, f"yvp_report_{d_start}_{d_end}.csv", "text/csv")
                 else: st.error("日期错误")
 
-        with tabs[2]: # 发布 (修改：增加战役/战场选择)
+        with tabs[2]: # 发布 (修改：支持研发任务)
             camps = run_query("campaigns")
             batts = run_query("battlefields")
             
@@ -622,19 +657,14 @@ elif nav == "🏰 个人中心":
             t_name = c1.text_input("任务标题", key="pub_t")
             t_desc = st.text_area("详情", key="pub_desc")
             
-            # --- 战役/战场选择器 ---
             st.markdown("---")
             st.markdown("⚔️ **战略归属**")
             sc1, sc2 = st.columns(2)
-            
-            # 战役选择
             camp_opts = camps['title'].tolist()
-            # 默认选第一个或者“统帅直辖”
             def_c_idx = 0
             sel_camp_t = sc1.selectbox("所属战役 (Campaign)", camp_opts, index=def_c_idx, key="pub_sel_camp")
             sel_camp_id = camps[camps['title']==sel_camp_t].iloc[0]['id']
             
-            # 战场选择 (根据战役联动)
             batt_opts_df = batts[batts['campaign_id'] == sel_camp_id]
             if not batt_opts_df.empty:
                 batt_opts = batt_opts_df['title'].tolist()
@@ -646,11 +676,21 @@ elif nav == "🏰 个人中心":
 
             st.markdown("---")
             
+            # --- 新增：研发任务开关 ---
+            is_rnd_task = st.checkbox("🟣 标记为【产品研发任务】(无需填工时/难度)", key="pub_is_rnd")
+
             col_d, col_c = c1.columns([3,2])
             d_inp = col_d.date_input("截止日期", key="pub_d")
             no_d = col_c.checkbox("无截止日期", key="pub_no_d")
-            diff = c2.number_input("难度", value=1.0, key="pub_diff")
-            stdt = c2.number_input("工时", value=1.0, key="pub_std")
+            
+            if is_rnd_task:
+                diff = 0.0
+                stdt = 0.0
+                c2.info("研发任务模式：难度与工时已自动设为 0")
+            else:
+                diff = c2.number_input("难度", value=1.0, key="pub_diff")
+                stdt = c2.number_input("工时", value=1.0, key="pub_std")
+            
             ttype = c2.radio("模式", ["公共任务池", "指派成员"], key="pub_type")
             assign = "待定"
             if ttype == "指派成员":
@@ -665,11 +705,12 @@ elif nav == "🏰 个人中心":
                         "title": t_name, "description": t_desc, "difficulty": diff, "std_time": stdt, 
                         "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign, 
                         "deadline": None if no_d else str(d_inp), "type": ttype, 
-                        "battlefield_id": int(sel_batt_id) # 写入战场ID
+                        "battlefield_id": int(sel_batt_id),
+                        "is_rnd": is_rnd_task # 写入标记
                     }).execute()
                     show_success_modal("任务发布成功！")
 
-        with tabs[3]: # 全量管理
+        with tabs[3]: # 全量管理 (修改：支持研发任务)
             st.subheader("🛠️ 精准修正")
             tdf = run_query("tasks"); udf = run_query("users")
             cf1, cf2 = st.columns(2)
@@ -682,15 +723,25 @@ elif nav == "🏰 个人中心":
                 tid = st.selectbox("选择任务", fil['id'], format_func=lambda x: f"ID:{x}|{fil[fil['id']==x]['title'].values[0]}", key="mng_sel")
                 tar = fil[fil['id']==tid].iloc[0]
                 with st.container(border=True):
-                    supabase.table("tasks").update({
-                        "title": st.text_input("标题", tar['title'], key=f"et_{tid}"),
-                        "description": st.text_area("详情", tar.get('description', ''), key=f"edesc_{tid}"),
-                        "difficulty": st.number_input("难度", value=float(tar['difficulty']), key=f"ed_{tid}"),
-                        "std_time": st.number_input("工时", value=float(tar['std_time']), key=f"est_{tid}"),
-                        "quality": st.number_input("质量", value=float(tar['quality']), key=f"eq_{tid}"),
-                        "status": st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(tar['status']), key=f"es_{tid}")
-                    }).eq("id", int(tid)).execute()
+                    # 编辑区域
+                    new_title = st.text_input("标题", tar['title'], key=f"et_{tid}")
+                    new_desc = st.text_area("详情", tar.get('description', ''), key=f"edesc_{tid}")
                     
+                    # 研发标记编辑
+                    curr_is_rnd = tar.get('is_rnd', False)
+                    edit_is_rnd = st.checkbox("🟣 产品研发任务", value=curr_is_rnd, key=f"e_rnd_{tid}")
+                    
+                    if edit_is_rnd:
+                        new_diff = 0.0
+                        new_stdt = 0.0
+                        st.caption("研发任务不设难度与工时")
+                    else:
+                        new_diff = st.number_input("难度", value=float(tar['difficulty']), key=f"ed_{tid}")
+                        new_stdt = st.number_input("工时", value=float(tar['std_time']), key=f"est_{tid}")
+                    
+                    new_qual = st.number_input("质量", value=float(tar['quality']), key=f"eq_{tid}")
+                    new_status = st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(tar['status']), key=f"es_{tid}")
+
                     c_edit_d1, c_edit_d2 = st.columns([3,2])
                     curr_d = tar.get('deadline')
                     is_null = pd.isna(curr_d) or str(curr_d) in ['None', 'NaT', '']
@@ -699,7 +750,12 @@ elif nav == "🏰 个人中心":
                     
                     if st.button("💾 保存", key=f"eb_{tid}"):
                         final_d = None if edit_no_d else str(edit_d_val)
-                        supabase.table("tasks").update({"deadline": final_d}).eq("id", int(tid)).execute()
+                        supabase.table("tasks").update({
+                            "title": new_title, "description": new_desc, 
+                            "difficulty": new_diff, "std_time": new_stdt, "quality": new_qual,
+                            "status": new_status, "deadline": final_d,
+                            "is_rnd": edit_is_rnd
+                        }).eq("id", int(tid)).execute()
                         st.rerun()
                         
                     with st.popover("🗑️ 删除任务"):
@@ -832,28 +888,28 @@ elif nav == "🏰 个人中心":
         batts = run_query("battlefields")
         camps = run_query("campaigns")
         
-        # 标签辅助函数
-        def get_task_label(bid):
-            if pd.isna(bid): return "未归类"
+        def get_task_label(bid, is_rnd=False):
+            label_html = ""
+            if is_rnd: label_html += "<span class='rnd-tag'>🟣 产品研发</span>"
+            if pd.isna(bid): return label_html + "未归类"
             try:
                 b_row = batts[batts['id'] == bid].iloc[0]
                 c_row = camps[camps['id'] == b_row['campaign_id']].iloc[0]
                 style_class = "strat-tag"
                 if c_row['id'] == -1: style_class = "strat-tag" 
                 else: style_class = "strat-tag strat-tag-active" 
-                return f"<span class='{style_class}'>{c_row['title']} / {b_row['title']}</span>"
-            except: return "未知"
+                label_html += f"<span class='{style_class}'>{c_row['title']} / {b_row['title']}</span>"
+                return label_html
+            except: return label_html + "未知"
 
         my = tdf[(tdf['assignee']==user) & (tdf['status'].isin(['进行中', '返工']))].copy()
         
-        # 排序
         my['deadline_dt'] = pd.to_datetime(my['deadline'], errors='coerce')
         my = my.sort_values(by='deadline_dt', ascending=True, na_position='last')
         
         for i, r in my.iterrows():
             with st.container(border=True):
-                # 战略标签
-                st.markdown(get_task_label(r.get('battlefield_id')), unsafe_allow_html=True)
+                st.markdown(get_task_label(r.get('battlefield_id'), r.get('is_rnd')), unsafe_allow_html=True)
                 
                 prefix = "🔴 [需返工] " if r['status'] == '返工' else ""
                 st.markdown(f"**{prefix}{r['title']}**")
@@ -872,8 +928,13 @@ elif nav == "🏰 个人中心":
                         d_style = "color: #D32F2F; font-weight: bold;"
                 
                 c_d1, c_d2, c_d3 = st.columns(3)
-                c_d1.markdown(f"⚙️ 难度: <span class='highlight-data'>{r['difficulty']}</span>", unsafe_allow_html=True)
-                c_d2.markdown(f"⏱️ 工时: <span class='highlight-data'>{r['std_time']}</span>", unsafe_allow_html=True)
+                if r.get('is_rnd'):
+                    c_d1.markdown("⚙️ 难度: <span class='highlight-data'>N/A</span>", unsafe_allow_html=True)
+                    c_d2.markdown("⏱️ 工时: <span class='highlight-data'>N/A</span>", unsafe_allow_html=True)
+                else:
+                    c_d1.markdown(f"⚙️ 难度: <span class='highlight-data'>{r['difficulty']}</span>", unsafe_allow_html=True)
+                    c_d2.markdown(f"⏱️ 工时: <span class='highlight-data'>{r['std_time']}</span>", unsafe_allow_html=True)
+                    
                 if d_style: c_d3.markdown(f"📅 <span style='{d_style}'>{d_show}</span>", unsafe_allow_html=True)
                 else: c_d3.markdown(f"📅 {d_show}")
                 
