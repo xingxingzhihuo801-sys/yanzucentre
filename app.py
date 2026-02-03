@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V36.5",
+    page_title="颜祖美学·执行中枢 V36.6",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -63,7 +63,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v36_5_popover_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v36_6_freeze_fix")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -380,7 +380,8 @@ if nav == "🔭 战略作战室":
             if edit_mode: st.info("🔥 指挥模式已激活")
         with col_create:
             if edit_mode:
-                with st.popover("🚩 新建战役"):
+                # 【核心修复】：将 popover 替换为 expander，防止灰屏死机
+                with st.expander("🚩 新建战役", expanded=False):
                     new_camp_t = st.text_input("战役名称")
                     new_camp_d = st.date_input("战役截止", value=None)
                     new_camp_idx = st.number_input("排序权重", value=0, step=1)
@@ -433,7 +434,7 @@ if nav == "🔭 战略作战室":
 
                 if not camp_batts.empty:
                     for _, batt in camp_batts.iterrows():
-                        # 【核心修复】：移除易崩的 Popover，使用安全的 Expander
+                        # 【核心修复】：使用 Expander 替代 Popover 进行战场管理，防止崩溃
                         with st.expander(f"🛡️ {batt['title']}", expanded=True):
                             # 管理区域 (仅编辑模式)
                             if edit_mode and role == 'admin' and batt['id'] != -1:
@@ -459,7 +460,6 @@ if nav == "🔭 战略作战室":
                                 if st.button("➕ 在此发布任务", key=f"qp_btn_{batt['id']}"):
                                     quick_publish_modal(camp['id'], batt['id'], batt['title'])
                             
-                            # 任务列表
                             b_tasks = pd.DataFrame()
                             if not all_tasks.empty and 'battlefield_id' in all_tasks.columns:
                                 b_tasks = all_tasks[all_tasks['battlefield_id'] == batt['id']]
