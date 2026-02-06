@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V36.6",
+    page_title="颜祖美学·执行中枢 V36.7",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -63,7 +63,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v36_6_freeze_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v36_7_full_edit")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -254,7 +254,7 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
         }).execute()
         st.success("发布成功！"); force_refresh()
 
-# --- 任务调动弹窗 (全域精准版) ---
+# --- 任务调动弹窗 ---
 @st.dialog("🔀 调动任务 (全域)")
 def move_task_modal(task_id, task_title, current_batt_id):
     st.markdown(f"正在调动任务：**{task_title}**")
@@ -380,7 +380,6 @@ if nav == "🔭 战略作战室":
             if edit_mode: st.info("🔥 指挥模式已激活")
         with col_create:
             if edit_mode:
-                # 【核心修复】：将 popover 替换为 expander，防止灰屏死机
                 with st.expander("🚩 新建战役", expanded=False):
                     new_camp_t = st.text_input("战役名称")
                     new_camp_d = st.date_input("战役截止", value=None)
@@ -434,9 +433,7 @@ if nav == "🔭 战略作战室":
 
                 if not camp_batts.empty:
                     for _, batt in camp_batts.iterrows():
-                        # 【核心修复】：使用 Expander 替代 Popover 进行战场管理，防止崩溃
                         with st.expander(f"🛡️ {batt['title']}", expanded=True):
-                            # 管理区域 (仅编辑模式)
                             if edit_mode and role == 'admin' and batt['id'] != -1:
                                 with st.container(border=True):
                                     st.caption("⚙️ 战场管理")
@@ -455,7 +452,6 @@ if nav == "🔭 战略作战室":
                                             supabase.table("battlefields").delete().eq("id", int(batt['id'])).execute()
                                             st.success("✅ 已删除"); force_refresh()
 
-                            # 任务发布 (仅编辑模式)
                             if edit_mode and role == 'admin':
                                 if st.button("➕ 在此发布任务", key=f"qp_btn_{batt['id']}"):
                                     quick_publish_modal(camp['id'], batt['id'], batt['title'])
@@ -697,37 +693,86 @@ elif nav == "🏰 个人中心":
                     supabase.table("tasks").insert({"title": t_name, "description": t_desc, "difficulty": diff, "std_time": stdt, "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign, "deadline": None if no_d else str(d_inp), "type": ttype, "battlefield_id": int(sel_batt_id), "is_rnd": is_rnd_task}).execute()
                     show_success_modal("发布成功")
 
-        with tabs[3]: # 全量管理
+        with tabs[3]: # 全量管理 (V36.7 增强版：修改全部信息)
             st.subheader("🛠️ 精准修正")
             tdf = run_query("tasks"); udf = run_query("users")
+            
+            # 筛选
             cf1, cf2 = st.columns(2)
-            user_list = ["全部"] + (list(udf['username'].unique()) if not udf.empty else [])
-            fu = cf1.selectbox("筛选人员", user_list, key="mng_u")
+            all_users = list(udf['username'].unique()) if not udf.empty else []
+            filter_users = ["全部"] + all_users
+            fu = cf1.selectbox("筛选人员", filter_users, key="mng_u")
             sk = cf2.text_input("搜标题", key="mng_k")
+            
             fil = tdf.copy()
             if not fil.empty:
                 if fu != "全部": fil = fil[fil['assignee'] == fu]
                 if sk: fil = fil[fil['title'].str.contains(sk, case=False, na=False)]
+            
             if not fil.empty:
                 tid = st.selectbox("选择任务", fil['id'], format_func=lambda x: f"ID:{x}|{fil[fil['id']==x]['title'].values[0]}", key="mng_sel")
                 tar = fil[fil['id']==tid].iloc[0]
+                
                 with st.container(border=True):
-                    new_title = st.text_input("标题", tar['title'], key=f"et_{tid}")
+                    # --- 1. 基本信息 (含指派人员修改) ---
+                    c_edit_1, c_edit_2 = st.columns([3, 1])
+                    new_title = c_edit_1.text_input("标题", tar['title'], key=f"et_{tid}")
+                    
+                    curr_ass = tar['assignee']
+                    try: ass_idx = all_users.index(curr_ass)
+                    except: ass_idx = 0
+                    new_assignee = c_edit_2.selectbox("指派给", all_users, index=ass_idx, key=f"eass_{tid}")
+
+                    new_desc = st.text_area("详情描述", value=tar.get('description') or "", key=f"edesc_{tid}")
+
+                    # --- 2. 核心参数 ---
                     curr_is_rnd = tar.get('is_rnd', False)
                     edit_is_rnd = st.checkbox("🟣 产品研发任务", value=curr_is_rnd, key=f"e_rnd_{tid}")
-                    if edit_is_rnd: new_diff=0.0; new_stdt=0.0
-                    else: new_diff = st.number_input("难度", value=float(tar['difficulty']), key=f"ed_{tid}"); new_stdt = st.number_input("工时", value=float(tar['std_time']), key=f"est_{tid}")
-                    new_qual = st.number_input("质量", value=float(tar['quality']), key=f"eq_{tid}")
-                    new_status = st.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(tar['status']), key=f"es_{tid}")
-                    if st.button("💾 保存", key=f"eb_{tid}"):
-                        supabase.table("tasks").update({"title": new_title, "difficulty": new_diff, "std_time": new_stdt, "quality": new_qual, "status": new_status, "is_rnd": edit_is_rnd}).eq("id", int(tid)).execute()
-                        show_success_modal("保存成功")
+                    
+                    c_p1, c_p2, c_p3 = st.columns(3)
+                    if edit_is_rnd: 
+                        new_diff=0.0; new_stdt=0.0
+                        c_p1.info("研发: 不设难度/工时")
+                    else: 
+                        new_diff = c_p1.number_input("难度", value=float(tar['difficulty']), key=f"ed_{tid}")
+                        new_stdt = c_p2.number_input("工时", value=float(tar['std_time']), key=f"est_{tid}")
+                    
+                    new_qual = c_p3.number_input("质量", value=float(tar['quality']), key=f"eq_{tid}")
+                    
+                    # --- 3. 状态与时间 (含截止日期修改) ---
+                    c_s1, c_s2, c_s3 = st.columns([2, 2, 1])
+                    new_status = c_s1.selectbox("状态", ["待领取", "进行中", "待验收", "完成", "返工"], index=["待领取", "进行中", "待验收", "完成", "返工"].index(tar['status']), key=f"es_{tid}")
+                    
+                    curr_d = tar.get('deadline')
+                    d_val = None
+                    if curr_d and str(curr_d) not in ['NaT', 'None', '']:
+                        try: d_val = pd.to_datetime(curr_d).date()
+                        except: pass
+                    
+                    new_d = c_s2.date_input("截止日期", value=d_val, key=f"edd_{tid}")
+                    no_d = c_s3.checkbox("无截止", value=(d_val is None), key=f"end_{tid}")
+
+                    if st.button("💾 保存所有修改", key=f"eb_{tid}", type="primary"):
+                        final_d = None if no_d else str(new_d)
+                        supabase.table("tasks").update({
+                            "title": new_title, 
+                            "description": new_desc,
+                            "assignee": new_assignee,
+                            "deadline": final_d,
+                            "difficulty": new_diff, 
+                            "std_time": new_stdt, 
+                            "quality": new_qual, 
+                            "status": new_status, 
+                            "is_rnd": edit_is_rnd
+                        }).eq("id", int(tid)).execute()
+                        show_success_modal("任务信息已全量更新！")
+                        
                     with st.popover("🗑️ 删除任务"):
                         if st.button("确认删除", key=f"btn_del_task_{tid}", type="primary"):
                             supabase.table("tasks").delete().eq("id", int(tid)).execute()
                             show_success_modal("删除成功")
 
-        with tabs[4]: # 奖惩管理 (恢复增删改查)
+        with tabs[4]: # 奖惩管理
             udf = run_query("users")
             members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
             c_p, c_r = st.columns(2)
