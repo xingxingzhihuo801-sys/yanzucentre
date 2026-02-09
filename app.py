@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V37.1",
+    page_title="颜祖美学·执行中枢 V37.2",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -67,7 +67,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v37_1_daily_pro")
+cookie_manager = stx.CookieManager(key="yanzu_v37_2_form_fix")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -369,25 +369,27 @@ st.divider()
 
 # ================= 业务路由 =================
 
-# --- 0. ☀️ 今日清单 (V37.1 增强版) ---
+# --- 0. ☀️ 今日清单 (V37.2 极速防卡顿版) ---
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
     st.info("📅 制定今日计划，保持大脑清晰。")
     
-    # 1. 输入区域
-    with st.container(border=True):
+    # 【核心优化】：使用 st.form 包裹输入区，解决卡顿和灰屏问题
+    with st.form("add_todo_form", clear_on_submit=True):
         col_in1, col_in2, col_in3 = st.columns([3, 1, 1])
         new_todo = col_in1.text_input("💡 添加事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
         new_cat = col_in2.selectbox("类型", ["核心必办", "余力选办"], label_visibility="collapsed")
-        if col_in3.button("➕ 添加", type="primary"):
-            if new_todo:
-                supabase.table("daily_todos").insert({
-                    "username": user, 
-                    "content": new_todo, 
-                    "category": new_cat, 
-                    "date": str(datetime.date.today())
-                }).execute()
-                st.rerun()
+        # 提交按钮
+        submitted = col_in3.form_submit_button("➕ 添加", type="primary", use_container_width=True)
+        
+        if submitted and new_todo:
+            supabase.table("daily_todos").insert({
+                "username": user, 
+                "content": new_todo, 
+                "category": new_cat, 
+                "date": str(datetime.date.today())
+            }).execute()
+            st.rerun()
 
     todos = run_query("daily_todos")
     today_str = str(datetime.date.today())
@@ -433,7 +435,7 @@ if nav == "☀️ 今日清单":
 
     st.divider()
     
-    # 3. 团队透视 (左右分栏)
+    # 3. 团队透视
     st.subheader("👀 团队今日动态")
     with st.expander("展开查看全员进度", expanded=True):
         if not todos.empty:
@@ -448,7 +450,6 @@ if nav == "☀️ 今日清单":
                             st.markdown(f"#### 👤 {u_name}")
                             u_tasks = team_todos[team_todos['username'] == u_name]
                             
-                            # 分左右栏：进行中 | 已完成
                             c_ing, c_fin = st.columns(2)
                             
                             with c_ing:
@@ -844,7 +845,7 @@ elif nav == "🏰 个人中心":
                             supabase.table("tasks").delete().eq("id", int(tid)).execute()
                             show_success_modal("删除成功")
 
-        with tabs[4]: # 奖惩管理
+        with tabs[4]: # 奖惩
             udf = run_query("users")
             members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
             c_p, c_r = st.columns(2)
@@ -863,7 +864,6 @@ elif nav == "🏰 个人中心":
                         c1.write(f"{p['username']} - {p['occurred_at']}")
                         if c2.button("🗑️", key=f"del_pen_{p['id']}"):
                             supabase.table("penalties").delete().eq("id", int(p['id'])).execute(); st.rerun()
-
             with c_r:
                 st.markdown("#### 🎁 奖励赏赐")
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
