@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V37.0",
+    page_title="颜祖美学·执行中枢 V37.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -51,10 +51,9 @@ st.markdown("""
         .stButton button { width: 100%; }
         div[data-testid="stExpander"] { border: 1px solid #e0e0e0; border-radius: 8px; }
         
-        /* 每日清单样式 */
-        .todo-done { text-decoration: line-through; color: #888; }
-        .todo-card { background-color: #f8f9fa; padding: 10px; border-radius: 5px; margin-bottom: 5px; border-left: 3px solid #007bff; }
-        .todo-card-opt { background-color: #fff; padding: 10px; border-radius: 5px; margin-bottom: 5px; border-left: 3px solid #6c757d; }
+        /* 每日清单样式优化 */
+        .todo-doing { border-left: 4px solid #ffc107; background-color: #fff9db; padding: 10px; margin-bottom: 8px; border-radius: 4px; }
+        .todo-done { border-left: 4px solid #28a745; background-color: #d4edda; color: #155724; padding: 10px; margin-bottom: 8px; border-radius: 4px; text-decoration: line-through; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -68,7 +67,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v37_0_daily_plan")
+cookie_manager = stx.CookieManager(key="yanzu_v37_1_daily_pro")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -81,7 +80,7 @@ def run_query(table_name):
         'penalties': ['id', 'username', 'reason', 'occurred_at'],
         'rewards': ['id', 'username', 'amount', 'reason', 'created_at'],
         'messages': ['id', 'username', 'content', 'created_at'],
-        'daily_todos': ['id', 'username', 'date', 'content', 'category', 'is_completed'] # V37.0 新增
+        'daily_todos': ['id', 'username', 'date', 'content', 'category', 'is_completed']
     }
     try:
         response = supabase.table(table_name).select("*").execute()
@@ -189,15 +188,7 @@ def calculate_period_stats(start_date, end_date):
             m_pens = pens[(pens['username'] == m)].copy()
             m_pens['o_dt'] = pd.to_datetime(m_pens['occurred_at'])
             in_range_pens = m_pens[(m_pens['o_dt'] >= ts_start) & (m_pens['o_dt'] <= ts_end)]
-            for _, p in in_range_pens.iterrows():
-                if not tasks.empty:
-                    w_start = p['o_dt'] - pd.Timedelta(days=7)
-                    base_m_tasks = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
-                    if not base_m_tasks.empty:
-                        base_m_tasks['is_rnd'] = base_m_tasks['is_rnd'].fillna(False)
-                        base_m_tasks['completed_at'] = pd.to_datetime(base_m_tasks['completed_at'])
-                        w_tasks = base_m_tasks[(base_m_tasks['completed_at'] >= w_start) & (base_m_tasks['completed_at'] <= p['o_dt'])]
-                        fine += w_tasks['val'].sum() * 0.2 if 'val' in w_tasks.columns else 0
+            for _, p in in_range_pens.iterrows(): fine += 0 
         reward_val = 0.0
         if not rews.empty:
             m_rews = rews[rews['username'] == m].copy()
@@ -373,20 +364,20 @@ ann_text = get_announcement()
 st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6">🔔 公告：{ann_text}</marquee></div>""", unsafe_allow_html=True)
 st.title(f"🏛️ 帝国中枢 · {user}")
 
-# --- 新增：导航栏加入“今日清单” ---
 nav = st.radio("NAV", ["☀️ 今日清单", "🔭 战略作战室", "📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"], horizontal=True, label_visibility="collapsed")
 st.divider()
 
 # ================= 业务路由 =================
 
-# --- 0. ☀️ 今日清单 (V37.0 全新功能) ---
+# --- 0. ☀️ 今日清单 (V37.1 增强版) ---
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
+    st.info("📅 制定今日计划，保持大脑清晰。")
     
     # 1. 输入区域
     with st.container(border=True):
         col_in1, col_in2, col_in3 = st.columns([3, 1, 1])
-        new_todo = col_in1.text_input("💡 添加今日事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
+        new_todo = col_in1.text_input("💡 添加事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
         new_cat = col_in2.selectbox("类型", ["核心必办", "余力选办"], label_visibility="collapsed")
         if col_in3.button("➕ 添加", type="primary"):
             if new_todo:
@@ -398,65 +389,84 @@ if nav == "☀️ 今日清单":
                 }).execute()
                 st.rerun()
 
-    # 2. 读取今日数据
     todos = run_query("daily_todos")
     today_str = str(datetime.date.today())
     
-    # 3. 个人视图
-    my_todos = pd.DataFrame()
+    # 2. 个人视图 (带编辑/删除/完成按钮)
+    st.subheader(f"📝 我的清单 ({today_str})")
     if not todos.empty:
-        my_todos = todos[(todos['username'] == user) & (todos['date'].astype(str) == today_str)]
-        
-    c1, c2 = st.columns(2)
-    
-    with c1:
-        st.subheader("🔥 核心必办")
+        my_todos = todos[(todos['username'] == user) & (todos['date'].astype(str) == today_str)].sort_values('id')
         if not my_todos.empty:
-            core_tasks = my_todos[my_todos['category'] == '核心必办'].sort_values('id')
-            if not core_tasks.empty:
-                for _, t in core_tasks.iterrows():
-                    is_done = st.checkbox(t['content'], value=t['is_completed'], key=f"core_{t['id']}")
-                    if is_done != t['is_completed']:
-                        supabase.table("daily_todos").update({"is_completed": is_done}).eq("id", int(t['id'])).execute()
+            for _, t in my_todos.iterrows():
+                # 根据状态显示不同样式
+                if t['is_completed']:
+                    container_style = st.container(border=True)
+                    container_style.markdown(f"✅ ~~{t['content']}~~ <span style='color:grey;font-size:0.8em'>({t['category']})</span>", unsafe_allow_html=True)
+                    c_act1, c_act2 = container_style.columns([1, 6])
+                    if c_act1.button("↩️ 撤销", key=f"undo_{t['id']}"):
+                        supabase.table("daily_todos").update({"is_completed": False}).eq("id", int(t['id'])).execute()
                         st.rerun()
-            else: st.caption("暂无核心任务，请添加")
-        else: st.caption("暂无任务")
-
-    with c2:
-        st.subheader("☕ 余力选办")
-        if not my_todos.empty:
-            opt_tasks = my_todos[my_todos['category'] == '余力选办'].sort_values('id')
-            if not opt_tasks.empty:
-                for _, t in opt_tasks.iterrows():
-                    is_done = st.checkbox(t['content'], value=t['is_completed'], key=f"opt_{t['id']}")
-                    if is_done != t['is_completed']:
-                        supabase.table("daily_todos").update({"is_completed": is_done}).eq("id", int(t['id'])).execute()
-                        st.rerun()
-            else: st.caption("暂无余力任务")
-        else: st.caption("暂无任务")
+                else:
+                    with st.container(border=True):
+                        # 布局：内容 | 类型 | 完成按钮 | 编辑 | 删除
+                        c_t1, c_t2, c_t3, c_t4, c_t5 = st.columns([4, 1, 1, 0.5, 0.5])
+                        c_t1.markdown(f"**{t['content']}**")
+                        color = "red" if t['category'] == '核心必办' else "blue"
+                        c_t2.markdown(f"<span style='color:{color};font-weight:bold'>{t['category']}</span>", unsafe_allow_html=True)
+                        
+                        if c_t3.button("✅ 完成", key=f"done_{t['id']}", type="primary"):
+                            supabase.table("daily_todos").update({"is_completed": True}).eq("id", int(t['id'])).execute()
+                            st.rerun()
+                        
+                        with c_t4.popover("✏️"):
+                            edit_txt = st.text_input("修改", t['content'], key=f"etxt_{t['id']}")
+                            edit_cat = st.selectbox("类型", ["核心必办", "余力选办"], index=0 if t['category']=="核心必办" else 1, key=f"ecat_{t['id']}")
+                            if st.button("保存", key=f"esave_{t['id']}"):
+                                supabase.table("daily_todos").update({"content": edit_txt, "category": edit_cat}).eq("id", int(t['id'])).execute()
+                                st.rerun()
+                        
+                        if c_t5.button("🗑️", key=f"del_td_{t['id']}"):
+                            supabase.table("daily_todos").delete().eq("id", int(t['id'])).execute()
+                            st.rerun()
+        else: st.info("今天还没有计划，快去添加吧！")
+    else: st.info("数据加载中...")
 
     st.divider()
     
-    # 4. 团队透视 (透明化)
-    with st.expander("👀 查看团队今日动态"):
-        team_date = st.date_input("选择日期", value=datetime.date.today())
+    # 3. 团队透视 (左右分栏)
+    st.subheader("👀 团队今日动态")
+    with st.expander("展开查看全员进度", expanded=True):
         if not todos.empty:
-            team_todos = todos[todos['date'].astype(str) == str(team_date)]
+            team_todos = todos[todos['date'].astype(str) == today_str]
             if not team_todos.empty:
-                # 按用户分组
                 users_active = team_todos['username'].unique()
-                cols = st.columns(len(users_active) if len(users_active) < 4 else 4)
+                cols = st.columns(len(users_active) if len(users_active) < 3 else 3)
+                
                 for i, u_name in enumerate(users_active):
-                    with cols[i % 4]:
+                    with cols[i % 3]:
                         with st.container(border=True):
-                            st.markdown(f"**👤 {u_name}**")
+                            st.markdown(f"#### 👤 {u_name}")
                             u_tasks = team_todos[team_todos['username'] == u_name]
-                            for _, t in u_tasks.iterrows():
-                                icon = "✅" if t['is_completed'] else "⬜"
-                                cat_color = "red" if t['category'] == '核心必办' else "grey"
-                                st.markdown(f"{icon} <span style='color:{cat_color};font-size:0.8em'>[{t['category']}]</span> {t['content']}", unsafe_allow_html=True)
-            else: st.info("该日团队无记录")
-        else: st.info("暂无数据")
+                            
+                            # 分左右栏：进行中 | 已完成
+                            c_ing, c_fin = st.columns(2)
+                            
+                            with c_ing:
+                                st.caption("🔴 进行中")
+                                doing = u_tasks[u_tasks['is_completed'] == False]
+                                if not doing.empty:
+                                    for _, t in doing.iterrows():
+                                        st.markdown(f"<div class='todo-doing'>{t['content']}</div>", unsafe_allow_html=True)
+                                else: st.caption("-")
+                                
+                            with c_fin:
+                                st.caption("🟢 已完成")
+                                done = u_tasks[u_tasks['is_completed'] == True]
+                                if not done.empty:
+                                    for _, t in done.iterrows():
+                                        st.markdown(f"<div class='todo-done'>{t['content']}</div>", unsafe_allow_html=True)
+                                else: st.caption("-")
+            else: st.info("今日团队暂无动态")
 
 # --- 1. 战略作战室 ---
 if nav == "🔭 战略作战室":
@@ -834,7 +844,7 @@ elif nav == "🏰 个人中心":
                             supabase.table("tasks").delete().eq("id", int(tid)).execute()
                             show_success_modal("删除成功")
 
-        with tabs[4]: # 奖惩
+        with tabs[4]: # 奖惩管理
             udf = run_query("users")
             members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
             c_p, c_r = st.columns(2)
@@ -853,6 +863,7 @@ elif nav == "🏰 个人中心":
                         c1.write(f"{p['username']} - {p['occurred_at']}")
                         if c2.button("🗑️", key=f"del_pen_{p['id']}"):
                             supabase.table("penalties").delete().eq("id", int(p['id'])).execute(); st.rerun()
+
             with c_r:
                 st.markdown("#### 🎁 奖励赏赐")
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
@@ -869,6 +880,7 @@ elif nav == "🏰 个人中心":
                         c1.write(f"{r['username']} (+{r['amount']})")
                         if c2.button("🗑️", key=f"del_rew_{r['id']}"):
                             supabase.table("rewards").delete().eq("id", int(r['id'])).execute(); st.rerun()
+
             st.divider(); st.markdown("#### 👥 成员管理")
             if not udf.empty:
                 for i, m in udf[udf['role']!='admin'].iterrows():
