@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V40.0",
+    page_title="颜祖美学·执行中枢 V40.1",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -51,14 +51,8 @@ st.markdown("""
         .stButton button { width: 100%; }
         div[data-testid="stExpander"] { border: 1px solid #e0e0e0; border-radius: 8px; }
         
-        /* 每日清单样式 */
         .todo-doing { border-left: 4px solid #ffc107; background-color: #fff9db; padding: 10px; margin-bottom: 8px; border-radius: 4px; }
         .todo-done { border-left: 4px solid #28a745; background-color: #d4edda; color: #155724; padding: 10px; margin-bottom: 8px; border-radius: 4px; text-decoration: line-through; }
-        
-        /* 请假状态标 */
-        .status-pending { color: #ffc107; font-weight: bold; }
-        .status-approved { color: #28a745; font-weight: bold; }
-        .status-rejected { color: #dc3545; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -72,7 +66,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v40_0_leave_sys")
+cookie_manager = stx.CookieManager(key="yanzu_v40_1_leave_refined")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -86,7 +80,7 @@ def run_query(table_name):
         'rewards': ['id', 'username', 'amount', 'reason', 'created_at'],
         'messages': ['id', 'username', 'content', 'created_at'],
         'daily_todos': ['id', 'username', 'date', 'content', 'category', 'is_completed'],
-        'leaves': ['id', 'username', 'leave_date', 'period', 'reason', 'is_emergency', 'status', 'admin_comment', 'created_at'] # V40.0 新增
+        'leaves': ['id', 'username', 'leave_date', 'period', 'reason', 'is_emergency', 'status', 'admin_comment', 'created_at']
     }
     try:
         response = supabase.table(table_name).select("*").execute()
@@ -94,7 +88,6 @@ def run_query(table_name):
         if df.empty: return pd.DataFrame(columns=schemas.get(table_name, []))
         for col in schemas.get(table_name, []):
             if col not in df.columns: df[col] = None 
-        # 日期处理
         for col in ['created_at', 'deadline', 'completed_at', 'occurred_at', 'date', 'leave_date']:
             if col in df.columns:
                 try: df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
@@ -230,10 +223,11 @@ def show_task_history(username, role):
                 c2.caption(f"归档: {r['completed_at']}")
                 c3.caption("研发任务" if r['is_rnd'] else "普通任务")
 
-@st.dialog("✅ 系统提示")
+@st.dialog("🎉 恭喜")
 def show_success_modal(msg="操作成功！"):
-    st.write(msg)
-    if st.button("关闭", type="primary"): force_refresh()
+    st.markdown(f"### {msg}")
+    st.balloons()
+    if st.button("关闭并刷新", type="primary"): force_refresh()
 
 def check_and_create_matrix_tasks(username):
     start_date = datetime.date(2026, 2, 11)
@@ -393,7 +387,6 @@ ann_text = get_announcement()
 st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6">🔔 公告：{ann_text}</marquee></div>""", unsafe_allow_html=True)
 st.title(f"🏛️ 帝国中枢 · {user}")
 
-# --- V40.0 新增导航项 ---
 nav = st.radio("NAV", ["☀️ 今日清单", "📅 请假中心", "🔭 战略作战室", "📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"], horizontal=True, label_visibility="collapsed")
 st.divider()
 
@@ -403,7 +396,6 @@ st.divider()
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
     st.info("📅 制定今日计划，保持大脑清晰。")
-    
     with st.form("add_todo_form", clear_on_submit=True):
         col_in1, col_in2, col_in3 = st.columns([3, 1, 1])
         new_todo = col_in1.text_input("💡 添加事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
@@ -483,7 +475,6 @@ if nav == "☀️ 今日清单":
                                         st.markdown(f"<div class='todo-done'>{t['content']}</div>", unsafe_allow_html=True)
                                 else: st.caption("-")
             else: st.info("今日团队暂无动态")
-            
     st.divider()
     with st.expander("📜 团队清单历史 (近10日)", expanded=False):
         if not todos.empty:
@@ -496,50 +487,55 @@ if nav == "☀️ 今日清单":
             else: st.info("暂无历史数据")
         else: st.info("暂无数据")
 
-# --- V40.0 新增: 📅 请假中心 ---
+# --- V40.1: 📅 请假中心 (精准微调) ---
 elif nav == "📅 请假中心":
     st.header("📅 请假中心 (Leave Center)")
-    
-    # 规则公示
     st.info("""
-    📢 **请假管理办法 (V40.0)**
-    1. **常规请假**：必需在 **前一日 22:00 前** 提交申请（例如：周二的假，必须周一晚 22:00 前提交）。
-    2. **突发/补假**：如遇突发疾病或急事，请勾选 **“🔴 突发/补假”** 并详述理由（需在理由中备注证明材料来源）。
-    3. **全员可见**：所有人的请假记录对全员透明（保留30天）。
-    4. **审批流程**：提交 -> 管理员(liujingting) 批复。
+    📢 **请假管理办法**
+    1. **常规请假**：必需在 **前一日 22:00 前** 提交申请。
+    2. **补假/突发**：如选择 **过去日期** 或 **晚于22:00**，必须勾选“🔴 突发/补假”。
+    3. **时段说明**：上午(10:00-12:00)，下午(14:00-17:00)。
     """)
     
-    # 提交表单
     with st.container(border=True):
         st.subheader("📝 提交请假申请")
         with st.form("leave_form", clear_on_submit=True):
             c1, c2 = st.columns(2)
-            l_date = c1.date_input("请假日期", min_value=datetime.date.today())
-            l_period = c2.selectbox("时段", ["全天", "上午 (09:00-13:00)", "下午 (14:00-18:00)"])
+            # V40.1 允许选择过去日期
+            l_date = c1.date_input("请假日期") 
+            # V40.1 更新时段
+            l_period = c2.selectbox("时段", ["全天", "上午 (10:00-12:00)", "下午 (14:00-17:00)"])
+            # V40.1 新增类型选择
+            l_type = st.radio("类型", ["❌ 不参与 (缺勤)", "⚠️ 晚到"], horizontal=True)
             l_reason = st.text_area("请假理由 (必填)")
-            l_emergency = st.checkbox("🔴 突发/补假 (超过前一日22:00或事后补假请勾选)")
+            l_emergency = st.checkbox("🔴 突发/补假 (超时或补填请勾选)")
             
             if st.form_submit_button("🚀 提交申请", type="primary"):
-                # 校验逻辑：是否符合 22:00 规则
                 is_valid = True
+                today_d = datetime.date.today()
                 
-                # 计算截止时间：请假日期前一天的 22:00
+                # 规则 1: 如果选了过去日期，必须勾选突发
+                if l_date < today_d and not l_emergency:
+                    st.error("❌ 补填过去日期的请假，请务必勾选“🔴 突发/补假”。")
+                    is_valid = False
+                
+                # 规则 2: 如果是今天或未来，但超时，必须勾选突发
                 deadline = datetime.datetime.combine(l_date - datetime.timedelta(days=1), datetime.time(22, 0))
-                now = datetime.datetime.now()
-                
-                if now > deadline and not l_emergency:
-                    st.error(f"❌ 提交失败：常规请假必须在前一日 22:00 前提交。\n当前已超时，如果是突发情况，请勾选“🔴 突发/补假”。")
+                if datetime.datetime.now() > deadline and not l_emergency:
+                    st.error(f"❌ 常规请假需在前一日 22:00 前提交。如为突发，请勾选“🔴 突发/补假”。")
                     is_valid = False
                 
                 if is_valid:
                     if not l_reason:
                         st.error("请填写请假理由！")
                     else:
+                        # V40.1 将类型写入理由中，避免改数据库表结构
+                        full_reason = f"【{l_type.split(' ')[1]}】{l_reason}"
                         supabase.table("leaves").insert({
                             "username": user,
                             "leave_date": str(l_date),
                             "period": l_period,
-                            "reason": l_reason,
+                            "reason": full_reason,
                             "is_emergency": l_emergency,
                             "status": "待审批"
                         }).execute()
@@ -547,44 +543,24 @@ elif nav == "📅 请假中心":
                         time.sleep(1); force_refresh()
 
     st.divider()
-
-    # 历史记录 (30天全员可见)
     st.subheader("🗓️ 团队请假公示 (近30日)")
     leaves = run_query("leaves")
     if not leaves.empty:
-        # 筛选30天内
         d_30 = datetime.date.today() - datetime.timedelta(days=30)
         view_leaves = leaves[pd.to_datetime(leaves['leave_date']).dt.date >= d_30].copy()
-        
         if not view_leaves.empty:
             view_leaves = view_leaves.sort_values(['leave_date', 'created_at'], ascending=False)
-            
-            # 渲染为 Dataframe，高亮状态
-            def color_status(val):
-                if val == '待审批': return 'color: orange; font-weight: bold'
-                elif val == '已批准': return 'color: green; font-weight: bold'
-                elif val == '驳回': return 'color: red; font-weight: bold'
-                return ''
-            
-            # 展示表格
             st.dataframe(
                 view_leaves[['username', 'leave_date', 'period', 'is_emergency', 'reason', 'status', 'admin_comment']],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "is_emergency": st.column_config.CheckboxColumn("突发?", disabled=True),
-                    "status": "状态"
-                }
+                use_container_width=True, hide_index=True,
+                column_config={"is_emergency": st.column_config.CheckboxColumn("突发?", disabled=True)}
             )
         else: st.info("近30天无请假记录")
     else: st.info("暂无数据")
 
-    # 管理员审批区
     if role == 'admin':
         st.divider()
         st.header("⚖️ 管理员审批台")
-        
-        # 1. 待审批列表
         pending = leaves[leaves['status'] == '待审批'] if not leaves.empty else pd.DataFrame()
         if not pending.empty:
             st.warning(f"🔔 有 {len(pending)} 条申请待处理")
@@ -594,7 +570,6 @@ elif nav == "📅 请假中心":
                     tag = "🔴 [突发]" if p['is_emergency'] else "🔵 [常规]"
                     c1.markdown(f"**{p['username']}** | {p['leave_date']} {p['period']} | {tag}")
                     c1.caption(f"理由: {p['reason']}")
-                    
                     if c2.button("✅ 批准", key=f"ok_{p['id']}"):
                         supabase.table("leaves").update({"status": "已批准"}).eq("id", int(p['id'])).execute()
                         st.rerun()
@@ -603,25 +578,47 @@ elif nav == "📅 请假中心":
                         st.rerun()
         else: st.success("🎉 所有申请已处理完毕")
 
-        # 2. 上帝修改模式
-        with st.expander("🛠️ 修改历史记录 (上帝模式)"):
-            if not leaves.empty:
-                lid = st.selectbox("选择要修改的记录", leaves['id'], format_func=lambda x: f"{leaves[leaves['id']==x]['username'].values[0]} - {leaves[leaves['id']==x]['leave_date'].values[0]}")
-                target = leaves[leaves['id']==lid].iloc[0]
+        # V40.1 新增：管理员补录/新增记录
+        with st.expander("➕ 补录历史记录 (管理员通道)", expanded=False):
+            st.caption("在此直接添加请假记录，将自动设为“已批准”。")
+            udf = run_query("users")
+            all_mems = udf['username'].tolist() if not udf.empty else []
+            
+            with st.form("admin_add_leave"):
+                ac1, ac2 = st.columns(2)
+                a_user = ac1.selectbox("选择成员", all_mems)
+                a_date = ac2.date_input("日期")
                 
+                ac3, ac4 = st.columns(2)
+                a_period = ac3.selectbox("时段", ["全天", "上午 (10:00-12:00)", "下午 (14:00-17:00)"], key="adm_per")
+                a_type = ac4.radio("类型", ["❌ 不参与", "⚠️ 晚到"], horizontal=True, key="adm_type")
+                
+                a_reason = st.text_input("备注/理由")
+                
+                if st.form_submit_button("🚀 确认添加"):
+                    full_rsn = f"【{a_type.split(' ')[1]}】(管理员补录) {a_reason}"
+                    supabase.table("leaves").insert({
+                        "username": a_user,
+                        "leave_date": str(a_date),
+                        "period": a_period,
+                        "reason": full_rsn,
+                        "is_emergency": False,
+                        "status": "已批准",
+                        "admin_comment": "系统补录"
+                    }).execute()
+                    st.success(f"已为 {a_user} 添加记录"); time.sleep(1); force_refresh()
+
+        with st.expander("🛠️ 修改现有记录 (上帝模式)"):
+            if not leaves.empty:
+                lid = st.selectbox("选择记录", leaves['id'], format_func=lambda x: f"{leaves[leaves['id']==x]['username'].values[0]} - {leaves[leaves['id']==x]['leave_date'].values[0]}")
+                target = leaves[leaves['id']==lid].iloc[0]
                 ce1, ce2 = st.columns(2)
                 n_date = ce1.date_input("改日期", value=pd.to_datetime(target['leave_date']).date())
-                n_period = ce2.selectbox("改时段", ["全天", "上午 (09:00-13:00)", "下午 (14:00-18:00)"], index=["全天", "上午 (09:00-13:00)", "下午 (14:00-18:00)"].index(target['period']))
+                n_period = ce2.selectbox("改时段", ["全天", "上午 (10:00-12:00)", "下午 (14:00-17:00)"], index=0)
                 n_status = st.selectbox("改状态", ["待审批", "已批准", "驳回"], index=["待审批", "已批准", "驳回"].index(target['status']))
                 n_comm = st.text_input("管理员批注", value=target['admin_comment'] or "")
-                
                 if st.button("💾 保存修改", type="primary"):
-                    supabase.table("leaves").update({
-                        "leave_date": str(n_date),
-                        "period": n_period,
-                        "status": n_status,
-                        "admin_comment": n_comm
-                    }).eq("id", int(lid)).execute()
+                    supabase.table("leaves").update({"leave_date": str(n_date), "period": n_period, "status": n_status, "admin_comment": n_comm}).eq("id", int(lid)).execute()
                     st.success("记录已修正"); force_refresh()
 
 # --- 1. 战略作战室 ---
@@ -945,6 +942,7 @@ elif nav == "🏰 个人中心":
             no_d = col_c.checkbox("无截止日期", key="pub_no_d")
             if is_rnd_task: diff=0.0; stdt=0.0; c2.info("研发任务不设工时")
             else: 
+                # V38.0 修改：支持小数
                 diff = c2.number_input("难度", value=1.0, min_value=0.0, step=0.1, format="%.1f")
                 stdt = c2.number_input("工时", value=1.0, min_value=0.0, step=0.1, format="%.1f")
             ttype = c2.radio("模式", ["公共任务池", "指派成员"], key="pub_type")
@@ -972,6 +970,7 @@ elif nav == "🏰 个人中心":
                 tid = st.selectbox("选择任务", fil['id'], format_func=lambda x: f"ID:{x}|{fil[fil['id']==x]['title'].values[0]}", key="mng_sel")
                 tar = fil[fil['id']==tid].iloc[0]
                 with st.container(border=True):
+                    # V36.7 增强修改
                     c_edit_1, c_edit_2 = st.columns([3, 1])
                     new_title = c_edit_1.text_input("标题", tar['title'], key=f"et_{tid}")
                     curr_ass = tar['assignee']
@@ -985,6 +984,7 @@ elif nav == "🏰 个人中心":
                     c_p1, c_p2, c_p3 = st.columns(3)
                     if edit_is_rnd: new_diff=0.0; new_stdt=0.0
                     else: 
+                        # V38.0 修改
                         new_diff = c_p1.number_input("难度", value=float(tar['difficulty']), min_value=0.0, step=0.1, format="%.1f", key=f"ed_{tid}")
                         new_stdt = c_p2.number_input("工时", value=float(tar['std_time']), min_value=0.0, step=0.1, format="%.1f", key=f"est_{tid}")
                     new_qual = c_p3.number_input("质量", value=float(tar['quality']), key=f"eq_{tid}")
@@ -1024,6 +1024,8 @@ elif nav == "🏰 个人中心":
                             supabase.table("penalties").delete().eq("id", int(p['id'])).execute(); st.rerun()
             with c_r:
                 st.markdown("#### 🎁 奖励赏赐")
+                
+                # --- V38.0 矩阵专属奖励模块 ---
                 with st.expander("🎬 矩阵阶梯奖励 (快捷生成)", expanded=False):
                     m_target = st.selectbox("账号/成员", members, key="mx_target")
                     m_tier = st.radio("点赞量级", ["👍 1000+", "👍 5000+", "👍 1万+", "🔥 10万+", "👑 100万+"], horizontal=True)
@@ -1033,9 +1035,10 @@ elif nav == "🏰 个人中心":
                         rsn = f"矩阵奖励：单篇点赞过 {m_tier.split(' ')[1]}"
                         supabase.table("rewards").insert({"username": m_target, "amount": amt, "reason": rsn}).execute()
                         st.success(f"已发放：{m_target} +{amt}"); force_refresh()
+                # -----------------------------
 
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
-                amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") 
+                amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") # 支持小数
                 reason_r = st.text_input("理由", key="rew_re")
                 if st.button("🎁 确认赏赐", type="primary", key="btn_rew"):
                     supabase.table("rewards").insert({"username": target_r, "amount": amt_r, "reason": reason_r}).execute()
