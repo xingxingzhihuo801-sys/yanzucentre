@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V40.1",
+    page_title="颜祖美学·执行中枢 V40.2",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -66,7 +66,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v40_1_leave_refined")
+cookie_manager = stx.CookieManager(key="yanzu_v40_2_night_owl")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -392,26 +392,35 @@ st.divider()
 
 # ================= 业务路由 =================
 
-# --- 0. ☀️ 今日清单 ---
+# --- 0. ☀️ 今日清单 (V40.2 凌晨3点刷新制) ---
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
     st.info("📅 制定今日计划，保持大脑清晰。")
+    
+    # 核心修改：计算“业务日期” (凌晨3点前算作前一天)
+    now = datetime.datetime.now()
+    if now.hour < 3:
+        business_date = now.date() - datetime.timedelta(days=1)
+    else:
+        business_date = now.date()
+    today_str = str(business_date)
+    
     with st.form("add_todo_form", clear_on_submit=True):
         col_in1, col_in2, col_in3 = st.columns([3, 1, 1])
         new_todo = col_in1.text_input("💡 添加事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
         new_cat = col_in2.selectbox("类型", ["核心必办", "余力选办"], label_visibility="collapsed")
         submitted = col_in3.form_submit_button("➕ 添加", type="primary", use_container_width=True)
+        
         if submitted and new_todo:
             supabase.table("daily_todos").insert({
                 "username": user, 
                 "content": new_todo, 
                 "category": new_cat, 
-                "date": str(datetime.date.today())
+                "date": today_str # 使用业务日期
             }).execute()
             st.rerun()
 
     todos = run_query("daily_todos")
-    today_str = str(datetime.date.today())
     
     st.subheader(f"📝 我的清单 ({today_str})")
     if not todos.empty:
@@ -431,15 +440,18 @@ if nav == "☀️ 今日清单":
                         c_t1.markdown(f"**{t['content']}**")
                         color = "red" if t['category'] == '核心必办' else "blue"
                         c_t2.markdown(f"<span style='color:{color};font-weight:bold'>{t['category']}</span>", unsafe_allow_html=True)
+                        
                         if c_t3.button("✅ 完成", key=f"done_{t['id']}", type="primary"):
                             supabase.table("daily_todos").update({"is_completed": True}).eq("id", int(t['id'])).execute()
                             show_success_modal(f"太棒了！已完成：{t['content']}")
+                        
                         with c_t4.popover("✏️"):
                             edit_txt = st.text_input("修改", t['content'], key=f"etxt_{t['id']}")
                             edit_cat = st.selectbox("类型", ["核心必办", "余力选办"], index=0 if t['category']=="核心必办" else 1, key=f"ecat_{t['id']}")
                             if st.button("保存", key=f"esave_{t['id']}"):
                                 supabase.table("daily_todos").update({"content": edit_txt, "category": edit_cat}).eq("id", int(t['id'])).execute()
                                 st.rerun()
+                        
                         if c_t5.button("🗑️", key=f"del_td_{t['id']}"):
                             supabase.table("daily_todos").delete().eq("id", int(t['id'])).execute()
                             st.rerun()
@@ -447,6 +459,7 @@ if nav == "☀️ 今日清单":
     else: st.info("数据加载中...")
 
     st.divider()
+    
     st.subheader("👀 团队今日动态")
     with st.expander("展开查看全员进度", expanded=True):
         if not todos.empty:
@@ -475,6 +488,7 @@ if nav == "☀️ 今日清单":
                                         st.markdown(f"<div class='todo-done'>{t['content']}</div>", unsafe_allow_html=True)
                                 else: st.caption("-")
             else: st.info("今日团队暂无动态")
+            
     st.divider()
     with st.expander("📜 团队清单历史 (近10日)", expanded=False):
         if not todos.empty:
@@ -487,7 +501,7 @@ if nav == "☀️ 今日清单":
             else: st.info("暂无历史数据")
         else: st.info("暂无数据")
 
-# --- V40.1: 📅 请假中心 (精准微调) ---
+# --- 📅 请假中心 ---
 elif nav == "📅 请假中心":
     st.header("📅 请假中心 (Leave Center)")
     st.info("""
@@ -501,11 +515,8 @@ elif nav == "📅 请假中心":
         st.subheader("📝 提交请假申请")
         with st.form("leave_form", clear_on_submit=True):
             c1, c2 = st.columns(2)
-            # V40.1 允许选择过去日期
             l_date = c1.date_input("请假日期") 
-            # V40.1 更新时段
             l_period = c2.selectbox("时段", ["全天", "上午 (10:00-12:00)", "下午 (14:00-17:00)"])
-            # V40.1 新增类型选择
             l_type = st.radio("类型", ["❌ 不参与 (缺勤)", "⚠️ 晚到"], horizontal=True)
             l_reason = st.text_area("请假理由 (必填)")
             l_emergency = st.checkbox("🔴 突发/补假 (超时或补填请勾选)")
@@ -514,12 +525,10 @@ elif nav == "📅 请假中心":
                 is_valid = True
                 today_d = datetime.date.today()
                 
-                # 规则 1: 如果选了过去日期，必须勾选突发
                 if l_date < today_d and not l_emergency:
                     st.error("❌ 补填过去日期的请假，请务必勾选“🔴 突发/补假”。")
                     is_valid = False
                 
-                # 规则 2: 如果是今天或未来，但超时，必须勾选突发
                 deadline = datetime.datetime.combine(l_date - datetime.timedelta(days=1), datetime.time(22, 0))
                 if datetime.datetime.now() > deadline and not l_emergency:
                     st.error(f"❌ 常规请假需在前一日 22:00 前提交。如为突发，请勾选“🔴 突发/补假”。")
@@ -529,7 +538,6 @@ elif nav == "📅 请假中心":
                     if not l_reason:
                         st.error("请填写请假理由！")
                     else:
-                        # V40.1 将类型写入理由中，避免改数据库表结构
                         full_reason = f"【{l_type.split(' ')[1]}】{l_reason}"
                         supabase.table("leaves").insert({
                             "username": user,
@@ -578,7 +586,6 @@ elif nav == "📅 请假中心":
                         st.rerun()
         else: st.success("🎉 所有申请已处理完毕")
 
-        # V40.1 新增：管理员补录/新增记录
         with st.expander("➕ 补录历史记录 (管理员通道)", expanded=False):
             st.caption("在此直接添加请假记录，将自动设为“已批准”。")
             udf = run_query("users")
@@ -588,13 +595,10 @@ elif nav == "📅 请假中心":
                 ac1, ac2 = st.columns(2)
                 a_user = ac1.selectbox("选择成员", all_mems)
                 a_date = ac2.date_input("日期")
-                
                 ac3, ac4 = st.columns(2)
                 a_period = ac3.selectbox("时段", ["全天", "上午 (10:00-12:00)", "下午 (14:00-17:00)"], key="adm_per")
                 a_type = ac4.radio("类型", ["❌ 不参与", "⚠️ 晚到"], horizontal=True, key="adm_type")
-                
                 a_reason = st.text_input("备注/理由")
-                
                 if st.form_submit_button("🚀 确认添加"):
                     full_rsn = f"【{a_type.split(' ')[1]}】(管理员补录) {a_reason}"
                     supabase.table("leaves").insert({
