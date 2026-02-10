@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V39.0",
+    page_title="颜祖美学·执行中枢 V40.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -54,6 +54,11 @@ st.markdown("""
         /* 每日清单样式 */
         .todo-doing { border-left: 4px solid #ffc107; background-color: #fff9db; padding: 10px; margin-bottom: 8px; border-radius: 4px; }
         .todo-done { border-left: 4px solid #28a745; background-color: #d4edda; color: #155724; padding: 10px; margin-bottom: 8px; border-radius: 4px; text-decoration: line-through; }
+        
+        /* 请假状态标 */
+        .status-pending { color: #ffc107; font-weight: bold; }
+        .status-approved { color: #28a745; font-weight: bold; }
+        .status-rejected { color: #dc3545; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -67,7 +72,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v39_0_matrix_pro")
+cookie_manager = stx.CookieManager(key="yanzu_v40_0_leave_sys")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -80,7 +85,8 @@ def run_query(table_name):
         'penalties': ['id', 'username', 'reason', 'occurred_at'],
         'rewards': ['id', 'username', 'amount', 'reason', 'created_at'],
         'messages': ['id', 'username', 'content', 'created_at'],
-        'daily_todos': ['id', 'username', 'date', 'content', 'category', 'is_completed']
+        'daily_todos': ['id', 'username', 'date', 'content', 'category', 'is_completed'],
+        'leaves': ['id', 'username', 'leave_date', 'period', 'reason', 'is_emergency', 'status', 'admin_comment', 'created_at'] # V40.0 新增
     }
     try:
         response = supabase.table(table_name).select("*").execute()
@@ -88,7 +94,8 @@ def run_query(table_name):
         if df.empty: return pd.DataFrame(columns=schemas.get(table_name, []))
         for col in schemas.get(table_name, []):
             if col not in df.columns: df[col] = None 
-        for col in ['created_at', 'deadline', 'completed_at', 'occurred_at', 'date']:
+        # 日期处理
+        for col in ['created_at', 'deadline', 'completed_at', 'occurred_at', 'date', 'leave_date']:
             if col in df.columns:
                 try: df[col] = pd.to_datetime(df[col], errors='coerce').dt.date
                 except: pass
@@ -223,49 +230,29 @@ def show_task_history(username, role):
                 c2.caption(f"归档: {r['completed_at']}")
                 c3.caption("研发任务" if r['is_rnd'] else "普通任务")
 
-@st.dialog("🎉 恭喜")
+@st.dialog("✅ 系统提示")
 def show_success_modal(msg="操作成功！"):
-    st.markdown(f"### {msg}")
-    st.balloons()
-    if st.button("关闭并刷新", type="primary"): force_refresh()
+    st.write(msg)
+    if st.button("关闭", type="primary"): force_refresh()
 
-# --- V39.0 修正：矩阵任务逻辑 (2月11日启动 + 命名格式化) ---
 def check_and_create_matrix_tasks(username):
-    # 设定启动日期：2026年2月11日
     start_date = datetime.date(2026, 2, 11)
     today = datetime.date.today()
-    
-    # 条件1：日期 >= 2月11日
-    # 条件2：周一到周五 (0-4)
     if today >= start_date and today.weekday() <= 4:
         today_str = str(today)
         tasks = run_query("tasks")
-        
-        # 构造今日标准标题格式
         task_title = f"{username} {today.month}.{today.day} 矩阵任务"
-        
-        # 检查是否已发
         has_task = False
         if not tasks.empty:
-            # 严格匹配标题和指派人
             exists = tasks[(tasks['assignee'] == username) & (tasks['title'] == task_title)]
-            if not exists.empty:
-                has_task = True
+            if not exists.empty: has_task = True
         
         if not has_task:
             matrix_desc = """【必做任务】\n1. 在自己的矩阵号上发布至少3条黑丸本土化视频。\n2. 奖励机制：\n   - 单篇点赞>1000：+1点\n   - 单篇点赞>5000：+2点\n   - 单篇点赞>1w：+5点\n   - 单篇点赞>10w：+30点\n   - 单篇点赞>100w：+150点\n3. ⚠️ 惩罚：未完成将直接按【缺勤】处理。"""
-            
             supabase.table("tasks").insert({
-                "title": task_title,
-                "description": matrix_desc,
-                "difficulty": 1.0,
-                "std_time": 2.0,
-                "status": "进行中",
-                "assignee": username,
-                "type": "matrix_daily",
-                "deadline": today_str,
-                "battlefield_id": -1,
-                "is_rnd": False
+                "title": task_title, "description": matrix_desc, "difficulty": 1.0, "std_time": 2.0,
+                "status": "进行中", "assignee": username, "type": "matrix_daily", "deadline": today_str,
+                "battlefield_id": -1, "is_rnd": False
             }).execute()
             st.toast(f"📅 已生成：{task_title}")
 
@@ -280,7 +267,6 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
     c1, c2 = st.columns(2)
     d_inp = c1.date_input("截止日期", key=f"qp_d_{batt_id}")
     no_d = c2.checkbox("无截止", key=f"qp_nd_{batt_id}")
-    
     if is_rnd_task:
         diff = 0.0; stdt = 0.0; st.caption("研发任务不设难度与工时")
     else:
@@ -342,11 +328,8 @@ if st.session_state.user is None:
             if res.data:
                 st.session_state.user = c_user
                 st.session_state.role = res.data[0]['role']
-                # V39.0 自动任务检查
-                if res.data[0]['role'] != 'admin':
-                    check_and_create_matrix_tasks(c_user)
-            else:
-                cookie_manager.delete("yanzu_user")
+                if res.data[0]['role'] != 'admin': check_and_create_matrix_tasks(c_user)
+            else: cookie_manager.delete("yanzu_user")
         except:
             st.session_state.user = c_user
             st.session_state.role = cookie_manager.get("yanzu_role") or 'member'
@@ -370,9 +353,7 @@ if st.session_state.user is None:
                         st.session_state.role = res.data[0]['role']
                         cookie_manager.set("yanzu_user", u, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
                         cookie_manager.set("yanzu_role", res.data[0]['role'], expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
-                        # V39.0 自动任务检查
-                        if res.data[0]['role'] != 'admin':
-                            check_and_create_matrix_tasks(u)
+                        if res.data[0]['role'] != 'admin': check_and_create_matrix_tasks(u)
                         st.rerun()
                     else: st.error("账号或密码错误")
                 except: st.error("连接超时，请重试")
@@ -412,12 +393,13 @@ ann_text = get_announcement()
 st.markdown(f"""<div class="scrolling-text"><marquee scrollamount="6">🔔 公告：{ann_text}</marquee></div>""", unsafe_allow_html=True)
 st.title(f"🏛️ 帝国中枢 · {user}")
 
-nav = st.radio("NAV", ["☀️ 今日清单", "🔭 战略作战室", "📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"], horizontal=True, label_visibility="collapsed")
+# --- V40.0 新增导航项 ---
+nav = st.radio("NAV", ["☀️ 今日清单", "📅 请假中心", "🔭 战略作战室", "📋 任务大厅", "🗣️ 颜祖广场", "🏆 风云榜", "🏰 个人中心"], horizontal=True, label_visibility="collapsed")
 st.divider()
 
 # ================= 业务路由 =================
 
-# --- 0. ☀️ 今日清单 (V39.0 弹窗反馈 + 历史回溯) ---
+# --- 0. ☀️ 今日清单 ---
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
     st.info("📅 制定今日计划，保持大脑清晰。")
@@ -427,7 +409,6 @@ if nav == "☀️ 今日清单":
         new_todo = col_in1.text_input("💡 添加事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
         new_cat = col_in2.selectbox("类型", ["核心必办", "余力选办"], label_visibility="collapsed")
         submitted = col_in3.form_submit_button("➕ 添加", type="primary", use_container_width=True)
-        
         if submitted and new_todo:
             supabase.table("daily_todos").insert({
                 "username": user, 
@@ -440,7 +421,6 @@ if nav == "☀️ 今日清单":
     todos = run_query("daily_todos")
     today_str = str(datetime.date.today())
     
-    # 2. 个人视图
     st.subheader(f"📝 我的清单 ({today_str})")
     if not todos.empty:
         my_todos = todos[(todos['username'] == user) & (todos['date'].astype(str) == today_str)].sort_values('id')
@@ -459,19 +439,15 @@ if nav == "☀️ 今日清单":
                         c_t1.markdown(f"**{t['content']}**")
                         color = "red" if t['category'] == '核心必办' else "blue"
                         c_t2.markdown(f"<span style='color:{color};font-weight:bold'>{t['category']}</span>", unsafe_allow_html=True)
-                        
-                        # V39.0 修改：弹窗反馈
                         if c_t3.button("✅ 完成", key=f"done_{t['id']}", type="primary"):
                             supabase.table("daily_todos").update({"is_completed": True}).eq("id", int(t['id'])).execute()
                             show_success_modal(f"太棒了！已完成：{t['content']}")
-                        
                         with c_t4.popover("✏️"):
                             edit_txt = st.text_input("修改", t['content'], key=f"etxt_{t['id']}")
                             edit_cat = st.selectbox("类型", ["核心必办", "余力选办"], index=0 if t['category']=="核心必办" else 1, key=f"ecat_{t['id']}")
                             if st.button("保存", key=f"esave_{t['id']}"):
                                 supabase.table("daily_todos").update({"content": edit_txt, "category": edit_cat}).eq("id", int(t['id'])).execute()
                                 st.rerun()
-                        
                         if c_t5.button("🗑️", key=f"del_td_{t['id']}"):
                             supabase.table("daily_todos").delete().eq("id", int(t['id'])).execute()
                             st.rerun()
@@ -479,8 +455,6 @@ if nav == "☀️ 今日清单":
     else: st.info("数据加载中...")
 
     st.divider()
-    
-    # 3. 团队透视
     st.subheader("👀 团队今日动态")
     with st.expander("展开查看全员进度", expanded=True):
         if not todos.empty:
@@ -510,12 +484,10 @@ if nav == "☀️ 今日清单":
                                 else: st.caption("-")
             else: st.info("今日团队暂无动态")
             
-    # 4. V39.0 新增：历史回溯 (过去10天)
     st.divider()
     with st.expander("📜 团队清单历史 (近10日)", expanded=False):
         if not todos.empty:
             ten_days_ago = datetime.date.today() - datetime.timedelta(days=10)
-            # 筛选最近10天
             hist_todos = todos[pd.to_datetime(todos['date']).dt.date >= ten_days_ago].copy()
             if not hist_todos.empty:
                 hist_todos['Status'] = hist_todos['is_completed'].apply(lambda x: '✅ 完成' if x else '🔴 未完')
@@ -523,6 +495,134 @@ if nav == "☀️ 今日清单":
                 st.dataframe(hist_todos, use_container_width=True, hide_index=True)
             else: st.info("暂无历史数据")
         else: st.info("暂无数据")
+
+# --- V40.0 新增: 📅 请假中心 ---
+elif nav == "📅 请假中心":
+    st.header("📅 请假中心 (Leave Center)")
+    
+    # 规则公示
+    st.info("""
+    📢 **请假管理办法 (V40.0)**
+    1. **常规请假**：必需在 **前一日 22:00 前** 提交申请（例如：周二的假，必须周一晚 22:00 前提交）。
+    2. **突发/补假**：如遇突发疾病或急事，请勾选 **“🔴 突发/补假”** 并详述理由（需在理由中备注证明材料来源）。
+    3. **全员可见**：所有人的请假记录对全员透明（保留30天）。
+    4. **审批流程**：提交 -> 管理员(liujingting) 批复。
+    """)
+    
+    # 提交表单
+    with st.container(border=True):
+        st.subheader("📝 提交请假申请")
+        with st.form("leave_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            l_date = c1.date_input("请假日期", min_value=datetime.date.today())
+            l_period = c2.selectbox("时段", ["全天", "上午 (09:00-13:00)", "下午 (14:00-18:00)"])
+            l_reason = st.text_area("请假理由 (必填)")
+            l_emergency = st.checkbox("🔴 突发/补假 (超过前一日22:00或事后补假请勾选)")
+            
+            if st.form_submit_button("🚀 提交申请", type="primary"):
+                # 校验逻辑：是否符合 22:00 规则
+                is_valid = True
+                
+                # 计算截止时间：请假日期前一天的 22:00
+                deadline = datetime.datetime.combine(l_date - datetime.timedelta(days=1), datetime.time(22, 0))
+                now = datetime.datetime.now()
+                
+                if now > deadline and not l_emergency:
+                    st.error(f"❌ 提交失败：常规请假必须在前一日 22:00 前提交。\n当前已超时，如果是突发情况，请勾选“🔴 突发/补假”。")
+                    is_valid = False
+                
+                if is_valid:
+                    if not l_reason:
+                        st.error("请填写请假理由！")
+                    else:
+                        supabase.table("leaves").insert({
+                            "username": user,
+                            "leave_date": str(l_date),
+                            "period": l_period,
+                            "reason": l_reason,
+                            "is_emergency": l_emergency,
+                            "status": "待审批"
+                        }).execute()
+                        st.success("✅ 申请已提交，等待管理员审批。")
+                        time.sleep(1); force_refresh()
+
+    st.divider()
+
+    # 历史记录 (30天全员可见)
+    st.subheader("🗓️ 团队请假公示 (近30日)")
+    leaves = run_query("leaves")
+    if not leaves.empty:
+        # 筛选30天内
+        d_30 = datetime.date.today() - datetime.timedelta(days=30)
+        view_leaves = leaves[pd.to_datetime(leaves['leave_date']).dt.date >= d_30].copy()
+        
+        if not view_leaves.empty:
+            view_leaves = view_leaves.sort_values(['leave_date', 'created_at'], ascending=False)
+            
+            # 渲染为 Dataframe，高亮状态
+            def color_status(val):
+                if val == '待审批': return 'color: orange; font-weight: bold'
+                elif val == '已批准': return 'color: green; font-weight: bold'
+                elif val == '驳回': return 'color: red; font-weight: bold'
+                return ''
+            
+            # 展示表格
+            st.dataframe(
+                view_leaves[['username', 'leave_date', 'period', 'is_emergency', 'reason', 'status', 'admin_comment']],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "is_emergency": st.column_config.CheckboxColumn("突发?", disabled=True),
+                    "status": "状态"
+                }
+            )
+        else: st.info("近30天无请假记录")
+    else: st.info("暂无数据")
+
+    # 管理员审批区
+    if role == 'admin':
+        st.divider()
+        st.header("⚖️ 管理员审批台")
+        
+        # 1. 待审批列表
+        pending = leaves[leaves['status'] == '待审批'] if not leaves.empty else pd.DataFrame()
+        if not pending.empty:
+            st.warning(f"🔔 有 {len(pending)} 条申请待处理")
+            for _, p in pending.iterrows():
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([3, 1, 1])
+                    tag = "🔴 [突发]" if p['is_emergency'] else "🔵 [常规]"
+                    c1.markdown(f"**{p['username']}** | {p['leave_date']} {p['period']} | {tag}")
+                    c1.caption(f"理由: {p['reason']}")
+                    
+                    if c2.button("✅ 批准", key=f"ok_{p['id']}"):
+                        supabase.table("leaves").update({"status": "已批准"}).eq("id", int(p['id'])).execute()
+                        st.rerun()
+                    if c3.button("🚫 驳回", key=f"no_{p['id']}"):
+                        supabase.table("leaves").update({"status": "驳回"}).eq("id", int(p['id'])).execute()
+                        st.rerun()
+        else: st.success("🎉 所有申请已处理完毕")
+
+        # 2. 上帝修改模式
+        with st.expander("🛠️ 修改历史记录 (上帝模式)"):
+            if not leaves.empty:
+                lid = st.selectbox("选择要修改的记录", leaves['id'], format_func=lambda x: f"{leaves[leaves['id']==x]['username'].values[0]} - {leaves[leaves['id']==x]['leave_date'].values[0]}")
+                target = leaves[leaves['id']==lid].iloc[0]
+                
+                ce1, ce2 = st.columns(2)
+                n_date = ce1.date_input("改日期", value=pd.to_datetime(target['leave_date']).date())
+                n_period = ce2.selectbox("改时段", ["全天", "上午 (09:00-13:00)", "下午 (14:00-18:00)"], index=["全天", "上午 (09:00-13:00)", "下午 (14:00-18:00)"].index(target['period']))
+                n_status = st.selectbox("改状态", ["待审批", "已批准", "驳回"], index=["待审批", "已批准", "驳回"].index(target['status']))
+                n_comm = st.text_input("管理员批注", value=target['admin_comment'] or "")
+                
+                if st.button("💾 保存修改", type="primary"):
+                    supabase.table("leaves").update({
+                        "leave_date": str(n_date),
+                        "period": n_period,
+                        "status": n_status,
+                        "admin_comment": n_comm
+                    }).eq("id", int(lid)).execute()
+                    st.success("记录已修正"); force_refresh()
 
 # --- 1. 战略作战室 ---
 if nav == "🔭 战略作战室":
@@ -845,7 +945,6 @@ elif nav == "🏰 个人中心":
             no_d = col_c.checkbox("无截止日期", key="pub_no_d")
             if is_rnd_task: diff=0.0; stdt=0.0; c2.info("研发任务不设工时")
             else: 
-                # V38.0 修改：支持小数
                 diff = c2.number_input("难度", value=1.0, min_value=0.0, step=0.1, format="%.1f")
                 stdt = c2.number_input("工时", value=1.0, min_value=0.0, step=0.1, format="%.1f")
             ttype = c2.radio("模式", ["公共任务池", "指派成员"], key="pub_type")
@@ -873,7 +972,6 @@ elif nav == "🏰 个人中心":
                 tid = st.selectbox("选择任务", fil['id'], format_func=lambda x: f"ID:{x}|{fil[fil['id']==x]['title'].values[0]}", key="mng_sel")
                 tar = fil[fil['id']==tid].iloc[0]
                 with st.container(border=True):
-                    # V36.7 增强修改
                     c_edit_1, c_edit_2 = st.columns([3, 1])
                     new_title = c_edit_1.text_input("标题", tar['title'], key=f"et_{tid}")
                     curr_ass = tar['assignee']
@@ -887,7 +985,6 @@ elif nav == "🏰 个人中心":
                     c_p1, c_p2, c_p3 = st.columns(3)
                     if edit_is_rnd: new_diff=0.0; new_stdt=0.0
                     else: 
-                        # V38.0 修改
                         new_diff = c_p1.number_input("难度", value=float(tar['difficulty']), min_value=0.0, step=0.1, format="%.1f", key=f"ed_{tid}")
                         new_stdt = c_p2.number_input("工时", value=float(tar['std_time']), min_value=0.0, step=0.1, format="%.1f", key=f"est_{tid}")
                     new_qual = c_p3.number_input("质量", value=float(tar['quality']), key=f"eq_{tid}")
@@ -927,8 +1024,6 @@ elif nav == "🏰 个人中心":
                             supabase.table("penalties").delete().eq("id", int(p['id'])).execute(); st.rerun()
             with c_r:
                 st.markdown("#### 🎁 奖励赏赐")
-                
-                # --- V38.0 矩阵专属奖励模块 ---
                 with st.expander("🎬 矩阵阶梯奖励 (快捷生成)", expanded=False):
                     m_target = st.selectbox("账号/成员", members, key="mx_target")
                     m_tier = st.radio("点赞量级", ["👍 1000+", "👍 5000+", "👍 1万+", "🔥 10万+", "👑 100万+"], horizontal=True)
@@ -938,10 +1033,9 @@ elif nav == "🏰 个人中心":
                         rsn = f"矩阵奖励：单篇点赞过 {m_tier.split(' ')[1]}"
                         supabase.table("rewards").insert({"username": m_target, "amount": amt, "reason": rsn}).execute()
                         st.success(f"已发放：{m_target} +{amt}"); force_refresh()
-                # -----------------------------
 
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
-                amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") # 支持小数
+                amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") 
                 reason_r = st.text_input("理由", key="rew_re")
                 if st.button("🎁 确认赏赐", type="primary", key="btn_rew"):
                     supabase.table("rewards").insert({"username": target_r, "amount": amt_r, "reason": reason_r}).execute()
