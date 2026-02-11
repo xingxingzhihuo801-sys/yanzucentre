@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V40.3",
+    page_title="颜祖美学·执行中枢 V40.4",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -66,7 +66,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v40_3_cst_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v40_4_matrix_struct")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -229,8 +229,29 @@ def show_success_modal(msg="操作成功！"):
     st.balloons()
     if st.button("关闭并刷新", type="primary"): force_refresh()
 
+# --- V40.4 辅助函数：确保矩阵战场存在 ---
+def get_or_create_matrix_battlefield():
+    # 1. 找战役
+    camps = supabase.table("campaigns").select("*").eq("title", "矩阵战役").execute()
+    if not camps.data:
+        # 创建战役
+        res_c = supabase.table("campaigns").insert({"title": "矩阵战役", "order_index": 99}).execute()
+        camp_id = res_c.data[0]['id']
+    else:
+        camp_id = camps.data[0]['id']
+        
+    # 2. 找战场
+    batts = supabase.table("battlefields").select("*").eq("title", "黑丸视频投放").eq("campaign_id", camp_id).execute()
+    if not batts.data:
+        # 创建战场
+        res_b = supabase.table("battlefields").insert({"title": "黑丸视频投放", "campaign_id": camp_id, "order_index": 1}).execute()
+        batt_id = res_b.data[0]['id']
+    else:
+        batt_id = batts.data[0]['id']
+        
+    return int(batt_id)
+
 def check_and_create_matrix_tasks(username):
-    # 强制使用北京时间
     cst_tz = datetime.timezone(datetime.timedelta(hours=8))
     today = datetime.datetime.now(cst_tz).date()
     start_date = datetime.date(2026, 2, 11)
@@ -245,11 +266,15 @@ def check_and_create_matrix_tasks(username):
             if not exists.empty: has_task = True
         
         if not has_task:
+            # V40.4 获取目标战场ID
+            target_bid = get_or_create_matrix_battlefield()
             matrix_desc = """【必做任务】\n1. 在自己的矩阵号上发布至少3条黑丸本土化视频。\n2. 奖励机制：\n   - 单篇点赞>1000：+1点\n   - 单篇点赞>5000：+2点\n   - 单篇点赞>1w：+5点\n   - 单篇点赞>10w：+30点\n   - 单篇点赞>100w：+150点\n3. ⚠️ 惩罚：未完成将直接按【缺勤】处理。"""
+            
             supabase.table("tasks").insert({
                 "title": task_title, "description": matrix_desc, "difficulty": 1.0, "std_time": 2.0,
                 "status": "进行中", "assignee": username, "type": "matrix_daily", "deadline": today_str,
-                "battlefield_id": -1, "is_rnd": False
+                "battlefield_id": target_bid, # 归位
+                "is_rnd": False
             }).execute()
             st.toast(f"📅 已生成：{task_title}")
 
@@ -265,6 +290,10 @@ def global_matrix_task_dispatch():
         exclude_list = ['liujingting', 'jiangjing', 'admin']
         target_users = users_df[~users_df['username'].isin(exclude_list)]['username'].tolist()
         all_tasks = run_query("tasks")
+        
+        # V40.4 获取目标战场ID
+        target_bid = get_or_create_matrix_battlefield()
+        
         matrix_desc = """【必做任务】\n1. 在自己的矩阵号上发布至少3条黑丸本土化视频。\n2. 奖励机制：\n   - 单篇点赞>1000：+1点\n   - 单篇点赞>5000：+2点\n   - 单篇点赞>1w：+5点\n   - 单篇点赞>10w：+30点\n   - 单篇点赞>100w：+150点\n3. ⚠️ 惩罚：未完成将直接按【缺勤】处理。"""
         new_tasks = []
         for u in target_users:
@@ -277,7 +306,8 @@ def global_matrix_task_dispatch():
                 new_tasks.append({
                     "title": task_title, "description": matrix_desc, "difficulty": 1.0, "std_time": 2.0,
                     "status": "进行中", "assignee": u, "type": "matrix_daily", "deadline": today_str,
-                    "battlefield_id": -1, "is_rnd": False
+                    "battlefield_id": target_bid, # 归位
+                    "is_rnd": False
                 })
         if new_tasks:
             supabase.table("tasks").insert(new_tasks).execute()
@@ -354,8 +384,7 @@ if st.session_state.user is None:
             if res.data:
                 st.session_state.user = c_user
                 st.session_state.role = res.data[0]['role']
-                # V40.3 全局检查 (强制时区)
-                global_matrix_task_dispatch()
+                if res.data[0]['role'] != 'admin': check_and_create_matrix_tasks(c_user)
             else: cookie_manager.delete("yanzu_user")
         except:
             st.session_state.user = c_user
@@ -425,12 +454,12 @@ st.divider()
 
 # ================= 业务路由 =================
 
-# --- 0. ☀️ 今日清单 (V40.3 北京时间修正) ---
+# --- 0. ☀️ 今日清单 ---
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
     st.info("📅 制定今日计划，保持大脑清晰。")
     
-    # 【核心修复】：强制转换为北京时间 (UTC+8)
+    # 北京时间修正
     cst_tz = datetime.timezone(datetime.timedelta(hours=8))
     now = datetime.datetime.now(cst_tz)
     
@@ -524,7 +553,6 @@ if nav == "☀️ 今日清单":
                                         st.markdown(f"<div class='todo-done'><b>[{cat_icon}]</b> {t['content']}</div>", unsafe_allow_html=True)
                                 else: st.caption("-")
             else: st.info("今日团队暂无动态")
-            
     st.divider()
     with st.expander("📜 团队清单历史 (近10日)", expanded=False):
         if not todos.empty:
@@ -560,13 +588,16 @@ elif nav == "📅 请假中心":
             if st.form_submit_button("🚀 提交申请", type="primary"):
                 is_valid = True
                 today_d = datetime.date.today()
+                
                 if l_date < today_d and not l_emergency:
                     st.error("❌ 补填过去日期的请假，请务必勾选“🔴 突发/补假”。")
                     is_valid = False
+                
                 deadline = datetime.datetime.combine(l_date - datetime.timedelta(days=1), datetime.time(22, 0))
                 if datetime.datetime.now() > deadline and not l_emergency:
                     st.error(f"❌ 常规请假需在前一日 22:00 前提交。如为突发，请勾选“🔴 突发/补假”。")
                     is_valid = False
+                
                 if is_valid:
                     if not l_reason:
                         st.error("请填写请假理由！")
