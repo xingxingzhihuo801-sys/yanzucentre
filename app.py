@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V40.4",
+    page_title="颜祖美学·执行中枢 V41.0",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -66,7 +66,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v40_4_matrix_struct")
+cookie_manager = stx.CookieManager(key="yanzu_v41_0_multi_assign")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -229,33 +229,23 @@ def show_success_modal(msg="操作成功！"):
     st.balloons()
     if st.button("关闭并刷新", type="primary"): force_refresh()
 
-# --- V40.4 辅助函数：确保矩阵战场存在 ---
 def get_or_create_matrix_battlefield():
-    # 1. 找战役
     camps = supabase.table("campaigns").select("*").eq("title", "矩阵战役").execute()
     if not camps.data:
-        # 创建战役
         res_c = supabase.table("campaigns").insert({"title": "矩阵战役", "order_index": 99}).execute()
         camp_id = res_c.data[0]['id']
-    else:
-        camp_id = camps.data[0]['id']
-        
-    # 2. 找战场
+    else: camp_id = camps.data[0]['id']
     batts = supabase.table("battlefields").select("*").eq("title", "黑丸视频投放").eq("campaign_id", camp_id).execute()
     if not batts.data:
-        # 创建战场
         res_b = supabase.table("battlefields").insert({"title": "黑丸视频投放", "campaign_id": camp_id, "order_index": 1}).execute()
         batt_id = res_b.data[0]['id']
-    else:
-        batt_id = batts.data[0]['id']
-        
+    else: batt_id = batts.data[0]['id']
     return int(batt_id)
 
 def check_and_create_matrix_tasks(username):
     cst_tz = datetime.timezone(datetime.timedelta(hours=8))
     today = datetime.datetime.now(cst_tz).date()
     start_date = datetime.date(2026, 2, 11)
-    
     if today >= start_date and today.weekday() <= 4:
         today_str = str(today)
         tasks = run_query("tasks")
@@ -264,17 +254,13 @@ def check_and_create_matrix_tasks(username):
         if not tasks.empty:
             exists = tasks[(tasks['assignee'] == username) & (tasks['title'] == task_title)]
             if not exists.empty: has_task = True
-        
         if not has_task:
-            # V40.4 获取目标战场ID
             target_bid = get_or_create_matrix_battlefield()
             matrix_desc = """【必做任务】\n1. 在自己的矩阵号上发布至少3条黑丸本土化视频。\n2. 奖励机制：\n   - 单篇点赞>1000：+1点\n   - 单篇点赞>5000：+2点\n   - 单篇点赞>1w：+5点\n   - 单篇点赞>10w：+30点\n   - 单篇点赞>100w：+150点\n3. ⚠️ 惩罚：未完成将直接按【缺勤】处理。"""
-            
             supabase.table("tasks").insert({
                 "title": task_title, "description": matrix_desc, "difficulty": 1.0, "std_time": 2.0,
                 "status": "进行中", "assignee": username, "type": "matrix_daily", "deadline": today_str,
-                "battlefield_id": target_bid, # 归位
-                "is_rnd": False
+                "battlefield_id": target_bid, "is_rnd": False
             }).execute()
             st.toast(f"📅 已生成：{task_title}")
 
@@ -282,7 +268,6 @@ def global_matrix_task_dispatch():
     cst_tz = datetime.timezone(datetime.timedelta(hours=8))
     today = datetime.datetime.now(cst_tz).date()
     start_date = datetime.date(2026, 2, 11)
-    
     if today >= start_date and today.weekday() <= 4:
         today_str = str(today)
         users_df = run_query("users")
@@ -290,10 +275,7 @@ def global_matrix_task_dispatch():
         exclude_list = ['liujingting', 'jiangjing', 'admin']
         target_users = users_df[~users_df['username'].isin(exclude_list)]['username'].tolist()
         all_tasks = run_query("tasks")
-        
-        # V40.4 获取目标战场ID
         target_bid = get_or_create_matrix_battlefield()
-        
         matrix_desc = """【必做任务】\n1. 在自己的矩阵号上发布至少3条黑丸本土化视频。\n2. 奖励机制：\n   - 单篇点赞>1000：+1点\n   - 单篇点赞>5000：+2点\n   - 单篇点赞>1w：+5点\n   - 单篇点赞>10w：+30点\n   - 单篇点赞>100w：+150点\n3. ⚠️ 惩罚：未完成将直接按【缺勤】处理。"""
         new_tasks = []
         for u in target_users:
@@ -306,13 +288,12 @@ def global_matrix_task_dispatch():
                 new_tasks.append({
                     "title": task_title, "description": matrix_desc, "difficulty": 1.0, "std_time": 2.0,
                     "status": "进行中", "assignee": u, "type": "matrix_daily", "deadline": today_str,
-                    "battlefield_id": target_bid, # 归位
-                    "is_rnd": False
+                    "battlefield_id": target_bid, "is_rnd": False
                 })
         if new_tasks:
             supabase.table("tasks").insert(new_tasks).execute()
 
-# --- 快捷发布任务弹窗 ---
+# --- 快捷发布任务弹窗 (V41.0 升级：支持多选/全员) ---
 @st.dialog("➕ 在此发布任务")
 def quick_publish_modal(camp_id, batt_id, batt_title):
     st.markdown(f"🛡️ **目标战场：{batt_title}**")
@@ -329,18 +310,37 @@ def quick_publish_modal(camp_id, batt_id, batt_title):
         diff = st.number_input("难度", value=1.0, min_value=0.0, step=0.1, format="%.1f", key=f"qp_diff_{batt_id}")
         stdt = st.number_input("工时", value=1.0, min_value=0.0, step=0.1, format="%.1f", key=f"qp_std_{batt_id}")
     ttype = st.radio("模式", ["公共任务池", "指派成员"], key=f"qp_type_{batt_id}")
-    assign = "待定"
+    
+    selected_assignees = []
+    
     if ttype == "指派成员":
         udf = run_query("users")
-        user_list = udf['username'].tolist() if not udf.empty else []
-        assign = st.selectbox("人员", user_list, key=f"qp_ass_{batt_id}")
+        all_members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
+        
+        # V41.0 新增：一键全员
+        assign_all = st.checkbox("⚡️ 一键指派给全员 (除管理员)", key=f"qp_all_{batt_id}")
+        if assign_all:
+            selected_assignees = all_members
+            st.info(f"已选择全员：{', '.join(all_members)}")
+        else:
+            selected_assignees = st.multiselect("选择人员 (可多选)", all_members, key=f"qp_ass_{batt_id}")
+    else:
+        selected_assignees = ["待定"] # 公共池
+
     if st.button("🚀 确认发布", type="primary"):
-        supabase.table("tasks").insert({
-            "title": t_name, "description": t_desc, "difficulty": diff, "std_time": stdt, 
-            "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign, 
-            "deadline": None if no_d else str(d_inp), "type": ttype, "battlefield_id": int(batt_id), "is_rnd": is_rnd_task
-        }).execute()
-        st.success("发布成功！"); force_refresh()
+        tasks_to_insert = []
+        for assignee in selected_assignees:
+            tasks_to_insert.append({
+                "title": t_name, "description": t_desc, "difficulty": diff, "std_time": stdt, 
+                "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assignee, 
+                "deadline": None if no_d else str(d_inp), "type": ttype, "battlefield_id": int(batt_id), "is_rnd": is_rnd_task
+            })
+        
+        if tasks_to_insert:
+            supabase.table("tasks").insert(tasks_to_insert).execute()
+            st.success(f"✅ 成功发布 {len(tasks_to_insert)} 条任务！"); force_refresh()
+        else:
+            st.error("请选择至少一名执行者")
 
 # --- 任务调动弹窗 ---
 @st.dialog("🔀 调动任务 (全域)")
@@ -458,15 +458,10 @@ st.divider()
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
     st.info("📅 制定今日计划，保持大脑清晰。")
-    
-    # 北京时间修正
     cst_tz = datetime.timezone(datetime.timedelta(hours=8))
     now = datetime.datetime.now(cst_tz)
-    
-    if now.hour < 3:
-        business_date = now.date() - datetime.timedelta(days=1)
-    else:
-        business_date = now.date()
+    if now.hour < 3: business_date = now.date() - datetime.timedelta(days=1)
+    else: business_date = now.date()
     today_str = str(business_date)
     
     with st.form("add_todo_form", clear_on_submit=True):
@@ -474,7 +469,6 @@ if nav == "☀️ 今日清单":
         new_todo = col_in1.text_input("💡 添加事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
         new_cat = col_in2.selectbox("类型", ["核心必办", "余力选办"], label_visibility="collapsed")
         submitted = col_in3.form_submit_button("➕ 添加", type="primary", use_container_width=True)
-        
         if submitted and new_todo:
             supabase.table("daily_todos").insert({
                 "username": user, 
@@ -485,7 +479,6 @@ if nav == "☀️ 今日清单":
             st.rerun()
 
     todos = run_query("daily_todos")
-    
     st.subheader(f"📝 我的清单 ({today_str})")
     if not todos.empty:
         my_todos = todos[(todos['username'] == user) & (todos['date'].astype(str) == today_str)].sort_values('id')
@@ -504,18 +497,15 @@ if nav == "☀️ 今日清单":
                         c_t1.markdown(f"**{t['content']}**")
                         color = "red" if t['category'] == '核心必办' else "blue"
                         c_t2.markdown(f"<span style='color:{color};font-weight:bold'>{t['category']}</span>", unsafe_allow_html=True)
-                        
                         if c_t3.button("✅ 完成", key=f"done_{t['id']}", type="primary"):
                             supabase.table("daily_todos").update({"is_completed": True}).eq("id", int(t['id'])).execute()
                             show_success_modal(f"太棒了！已完成：{t['content']}")
-                        
                         with c_t4.popover("✏️"):
                             edit_txt = st.text_input("修改", t['content'], key=f"etxt_{t['id']}")
                             edit_cat = st.selectbox("类型", ["核心必办", "余力选办"], index=0 if t['category']=="核心必办" else 1, key=f"ecat_{t['id']}")
                             if st.button("保存", key=f"esave_{t['id']}"):
                                 supabase.table("daily_todos").update({"content": edit_txt, "category": edit_cat}).eq("id", int(t['id'])).execute()
                                 st.rerun()
-                        
                         if c_t5.button("🗑️", key=f"del_td_{t['id']}"):
                             supabase.table("daily_todos").delete().eq("id", int(t['id'])).execute()
                             st.rerun()
@@ -574,7 +564,6 @@ elif nav == "📅 请假中心":
     2. **补假/突发**：如选择 **过去日期** 或 **晚于22:00**，必须勾选“🔴 突发/补假”。
     3. **时段说明**：上午(10:00-12:00)，下午(14:00-17:00)。
     """)
-    
     with st.container(border=True):
         st.subheader("📝 提交请假申请")
         with st.form("leave_form", clear_on_submit=True):
@@ -584,20 +573,16 @@ elif nav == "📅 请假中心":
             l_type = st.radio("类型", ["❌ 不参与 (缺勤)", "⚠️ 晚到"], horizontal=True)
             l_reason = st.text_area("请假理由 (必填)")
             l_emergency = st.checkbox("🔴 突发/补假 (超时或补填请勾选)")
-            
             if st.form_submit_button("🚀 提交申请", type="primary"):
                 is_valid = True
                 today_d = datetime.date.today()
-                
                 if l_date < today_d and not l_emergency:
                     st.error("❌ 补填过去日期的请假，请务必勾选“🔴 突发/补假”。")
                     is_valid = False
-                
                 deadline = datetime.datetime.combine(l_date - datetime.timedelta(days=1), datetime.time(22, 0))
                 if datetime.datetime.now() > deadline and not l_emergency:
                     st.error(f"❌ 常规请假需在前一日 22:00 前提交。如为突发，请勾选“🔴 突发/补假”。")
                     is_valid = False
-                
                 if is_valid:
                     if not l_reason:
                         st.error("请填写请假理由！")
@@ -613,7 +598,6 @@ elif nav == "📅 请假中心":
                         }).execute()
                         st.success("✅ 申请已提交，等待管理员审批。")
                         time.sleep(1); force_refresh()
-
     st.divider()
     st.subheader("🗓️ 团队请假公示 (近30日)")
     leaves = run_query("leaves")
@@ -1013,14 +997,34 @@ elif nav == "🏰 个人中心":
                 diff = c2.number_input("难度", value=1.0, min_value=0.0, step=0.1, format="%.1f")
                 stdt = c2.number_input("工时", value=1.0, min_value=0.0, step=0.1, format="%.1f")
             ttype = c2.radio("模式", ["公共任务池", "指派成员"], key="pub_type")
-            assign = "待定"
+            
+            # V41.0 多选逻辑
+            selected_assignees = []
             if ttype == "指派成员":
                 udf = run_query("users")
-                assign = st.selectbox("人员", udf['username'].tolist() if not udf.empty else [], key="pub_ass")
+                all_members = udf[udf['role']!='admin']['username'].tolist() if not udf.empty else []
+                assign_all = st.checkbox("⚡️ 一键指派给全员 (除管理员)", key="pub_all")
+                if assign_all:
+                    selected_assignees = all_members
+                    st.info(f"已选择全员：{', '.join(all_members)}")
+                else:
+                    selected_assignees = st.multiselect("选择人员 (可多选)", all_members, key="pub_ass")
+            else:
+                selected_assignees = ["待定"]
+
             if st.button("🚀 确认发布", type="primary", key="pub_btn"):
                 if sel_batt_id:
-                    supabase.table("tasks").insert({"title": t_name, "description": t_desc, "difficulty": diff, "std_time": stdt, "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assign, "deadline": None if no_d else str(d_inp), "type": ttype, "battlefield_id": int(sel_batt_id), "is_rnd": is_rnd_task}).execute()
-                    show_success_modal("发布成功")
+                    tasks_to_insert = []
+                    for assignee in selected_assignees:
+                        tasks_to_insert.append({
+                            "title": t_name, "description": t_desc, "difficulty": diff, "std_time": stdt, 
+                            "status": "待领取" if ttype=="公共任务池" else "进行中", "assignee": assignee, 
+                            "deadline": None if no_d else str(d_inp), "type": ttype, "battlefield_id": int(sel_batt_id), "is_rnd": is_rnd_task
+                        })
+                    if tasks_to_insert:
+                        supabase.table("tasks").insert(tasks_to_insert).execute()
+                        show_success_modal(f"成功发布 {len(tasks_to_insert)} 条任务！")
+                    else: st.error("请选择至少一名执行者")
 
         with tabs[3]: # 全量管理
             st.subheader("🛠️ 精准修正")
