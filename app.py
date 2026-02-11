@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V40.2",
+    page_title="颜祖美学·执行中枢 V40.3",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -66,7 +66,7 @@ except Exception:
     st.stop()
 
 # --- 3. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v40_2_time_control")
+cookie_manager = stx.CookieManager(key="yanzu_v40_3_cst_fix")
 
 # --- 4. 核心工具函数 ---
 @st.cache_data(ttl=2) 
@@ -229,61 +229,58 @@ def show_success_modal(msg="操作成功！"):
     st.balloons()
     if st.button("关闭并刷新", type="primary"): force_refresh()
 
-# --- V40.2 升级：矩阵任务全员自动分发 ---
-def global_matrix_task_dispatch():
-    # 设定启动日期：2026年2月11日
+def check_and_create_matrix_tasks(username):
+    # 强制使用北京时间
+    cst_tz = datetime.timezone(datetime.timedelta(hours=8))
+    today = datetime.datetime.now(cst_tz).date()
     start_date = datetime.date(2026, 2, 11)
-    today = datetime.date.today()
     
-    # 规则：>=2月11日 且为工作日 (周一到周五)
     if today >= start_date and today.weekday() <= 4:
         today_str = str(today)
+        tasks = run_query("tasks")
+        task_title = f"{username} {today.month}.{today.day} 矩阵任务"
+        has_task = False
+        if not tasks.empty:
+            exists = tasks[(tasks['assignee'] == username) & (tasks['title'] == task_title)]
+            if not exists.empty: has_task = True
         
-        # 获取所有用户
+        if not has_task:
+            matrix_desc = """【必做任务】\n1. 在自己的矩阵号上发布至少3条黑丸本土化视频。\n2. 奖励机制：\n   - 单篇点赞>1000：+1点\n   - 单篇点赞>5000：+2点\n   - 单篇点赞>1w：+5点\n   - 单篇点赞>10w：+30点\n   - 单篇点赞>100w：+150点\n3. ⚠️ 惩罚：未完成将直接按【缺勤】处理。"""
+            supabase.table("tasks").insert({
+                "title": task_title, "description": matrix_desc, "difficulty": 1.0, "std_time": 2.0,
+                "status": "进行中", "assignee": username, "type": "matrix_daily", "deadline": today_str,
+                "battlefield_id": -1, "is_rnd": False
+            }).execute()
+            st.toast(f"📅 已生成：{task_title}")
+
+def global_matrix_task_dispatch():
+    cst_tz = datetime.timezone(datetime.timedelta(hours=8))
+    today = datetime.datetime.now(cst_tz).date()
+    start_date = datetime.date(2026, 2, 11)
+    
+    if today >= start_date and today.weekday() <= 4:
+        today_str = str(today)
         users_df = run_query("users")
         if users_df.empty: return
-        
-        # 排除名单
         exclude_list = ['liujingting', 'jiangjing', 'admin']
         target_users = users_df[~users_df['username'].isin(exclude_list)]['username'].tolist()
-        
-        # 获取现有任务以查重
         all_tasks = run_query("tasks")
-        
         matrix_desc = """【必做任务】\n1. 在自己的矩阵号上发布至少3条黑丸本土化视频。\n2. 奖励机制：\n   - 单篇点赞>1000：+1点\n   - 单篇点赞>5000：+2点\n   - 单篇点赞>1w：+5点\n   - 单篇点赞>10w：+30点\n   - 单篇点赞>100w：+150点\n3. ⚠️ 惩罚：未完成将直接按【缺勤】处理。"""
-        
         new_tasks = []
         for u in target_users:
-            # 标题格式：xxx 2.11 矩阵任务
             task_title = f"{u} {today.month}.{today.day} 矩阵任务"
-            
-            # 检查是否已存在
             is_exist = False
             if not all_tasks.empty:
-                # 严格匹配 指派人 + 标题
                 check = all_tasks[(all_tasks['assignee'] == u) & (all_tasks['title'] == task_title)]
-                if not check.empty:
-                    is_exist = True
-            
+                if not check.empty: is_exist = True
             if not is_exist:
                 new_tasks.append({
-                    "title": task_title,
-                    "description": matrix_desc,
-                    "difficulty": 1.0,
-                    "std_time": 2.0,
-                    "status": "进行中",
-                    "assignee": u,
-                    "type": "matrix_daily",
-                    "deadline": today_str,
-                    "battlefield_id": -1, # 默认统帅直辖
-                    "is_rnd": False
+                    "title": task_title, "description": matrix_desc, "difficulty": 1.0, "std_time": 2.0,
+                    "status": "进行中", "assignee": u, "type": "matrix_daily", "deadline": today_str,
+                    "battlefield_id": -1, "is_rnd": False
                 })
-        
-        # 批量插入
         if new_tasks:
             supabase.table("tasks").insert(new_tasks).execute()
-            # 不弹窗打扰，默默执行即可，或者给当前用户一个轻提示
-            # st.toast(f"已自动分发 {len(new_tasks)} 条矩阵任务")
 
 # --- 快捷发布任务弹窗 ---
 @st.dialog("➕ 在此发布任务")
@@ -357,7 +354,7 @@ if st.session_state.user is None:
             if res.data:
                 st.session_state.user = c_user
                 st.session_state.role = res.data[0]['role']
-                # V40.2 全局派发检查 (任何人登录都触发检查，确保任务生成)
+                # V40.3 全局检查 (强制时区)
                 global_matrix_task_dispatch()
             else: cookie_manager.delete("yanzu_user")
         except:
@@ -383,7 +380,6 @@ if st.session_state.user is None:
                         st.session_state.role = res.data[0]['role']
                         cookie_manager.set("yanzu_user", u, expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
                         cookie_manager.set("yanzu_role", res.data[0]['role'], expires_at=datetime.datetime.now() + datetime.timedelta(days=30))
-                        # V40.2 登录即触发全员检查
                         global_matrix_task_dispatch()
                         st.rerun()
                     else: st.error("账号或密码错误")
@@ -429,13 +425,15 @@ st.divider()
 
 # ================= 业务路由 =================
 
-# --- 0. ☀️ 今日清单 (V40.2 逻辑升级) ---
+# --- 0. ☀️ 今日清单 (V40.3 北京时间修正) ---
 if nav == "☀️ 今日清单":
     st.header("☀️ 今日清单 (Daily Plan)")
     st.info("📅 制定今日计划，保持大脑清晰。")
     
-    # 【V40.2 核心逻辑】：定义业务日期（凌晨3点前算前一天）
-    now = datetime.datetime.now()
+    # 【核心修复】：强制转换为北京时间 (UTC+8)
+    cst_tz = datetime.timezone(datetime.timedelta(hours=8))
+    now = datetime.datetime.now(cst_tz)
+    
     if now.hour < 3:
         business_date = now.date() - datetime.timedelta(days=1)
     else:
@@ -447,12 +445,13 @@ if nav == "☀️ 今日清单":
         new_todo = col_in1.text_input("💡 添加事项", placeholder="例如：交付799报告...", label_visibility="collapsed")
         new_cat = col_in2.selectbox("类型", ["核心必办", "余力选办"], label_visibility="collapsed")
         submitted = col_in3.form_submit_button("➕ 添加", type="primary", use_container_width=True)
+        
         if submitted and new_todo:
             supabase.table("daily_todos").insert({
                 "username": user, 
                 "content": new_todo, 
                 "category": new_cat, 
-                "date": today_str # 写入业务日期
+                "date": today_str
             }).execute()
             st.rerun()
 
@@ -460,7 +459,6 @@ if nav == "☀️ 今日清单":
     
     st.subheader(f"📝 我的清单 ({today_str})")
     if not todos.empty:
-        # 筛选逻辑同步业务日期
         my_todos = todos[(todos['username'] == user) & (todos['date'].astype(str) == today_str)].sort_values('id')
         if not my_todos.empty:
             for _, t in my_todos.iterrows():
@@ -477,15 +475,18 @@ if nav == "☀️ 今日清单":
                         c_t1.markdown(f"**{t['content']}**")
                         color = "red" if t['category'] == '核心必办' else "blue"
                         c_t2.markdown(f"<span style='color:{color};font-weight:bold'>{t['category']}</span>", unsafe_allow_html=True)
+                        
                         if c_t3.button("✅ 完成", key=f"done_{t['id']}", type="primary"):
                             supabase.table("daily_todos").update({"is_completed": True}).eq("id", int(t['id'])).execute()
                             show_success_modal(f"太棒了！已完成：{t['content']}")
+                        
                         with c_t4.popover("✏️"):
                             edit_txt = st.text_input("修改", t['content'], key=f"etxt_{t['id']}")
                             edit_cat = st.selectbox("类型", ["核心必办", "余力选办"], index=0 if t['category']=="核心必办" else 1, key=f"ecat_{t['id']}")
                             if st.button("保存", key=f"esave_{t['id']}"):
                                 supabase.table("daily_todos").update({"content": edit_txt, "category": edit_cat}).eq("id", int(t['id'])).execute()
                                 st.rerun()
+                        
                         if c_t5.button("🗑️", key=f"del_td_{t['id']}"):
                             supabase.table("daily_todos").delete().eq("id", int(t['id'])).execute()
                             st.rerun()
@@ -511,7 +512,6 @@ if nav == "☀️ 今日清单":
                                 doing = u_tasks[u_tasks['is_completed'] == False]
                                 if not doing.empty:
                                     for _, t in doing.iterrows():
-                                        # V40.2 增加类型显示
                                         cat_icon = "🔥" if t['category'] == '核心必办' else "☕"
                                         st.markdown(f"<div class='todo-doing'><b>[{cat_icon}]</b> {t['content']}</div>", unsafe_allow_html=True)
                                 else: st.caption("-")
@@ -524,6 +524,7 @@ if nav == "☀️ 今日清单":
                                         st.markdown(f"<div class='todo-done'><b>[{cat_icon}]</b> {t['content']}</div>", unsafe_allow_html=True)
                                 else: st.caption("-")
             else: st.info("今日团队暂无动态")
+            
     st.divider()
     with st.expander("📜 团队清单历史 (近10日)", expanded=False):
         if not todos.empty:
