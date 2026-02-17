@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V42.4",
+    page_title="颜祖美学·执行中枢 V42.5",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -81,7 +81,7 @@ except Exception:
     st.stop()
 
 # --- 4. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v42_4_crash_proof")
+cookie_manager = stx.CookieManager(key="yanzu_v42_5_reward_fix")
 
 # --- 5. 核心工具函数定义 ---
 
@@ -209,17 +209,14 @@ def show_task_history(username, role):
                 c2.caption(f"归档: {r.get('completed_at', '-')}")
                 c3.caption("研发任务" if r['is_rnd'] else "普通任务")
 
-# --- V42.4 核心修复：防崩计算逻辑 ---
 def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
     try:
         gross = 0.0
         if not tasks_df.empty:
-            # 使用副本，绝不修改原始缓存
             df_t = tasks_df.copy()
             my_done = df_t[(df_t['assignee'] == username) & (df_t['status'] == '完成')].copy()
             if not my_done.empty:
                 my_done['is_rnd'] = my_done['is_rnd'].fillna(False)
-                # 安全计算
                 my_done['val'] = my_done.apply(lambda x: 0.0 if x['is_rnd'] else (safe_float(x.get('difficulty')) * safe_float(x.get('std_time')) * safe_float(x.get('quality'))), axis=1)
                 
                 my_done['c_dt'] = pd.to_datetime(my_done['completed_at'], errors='coerce')
@@ -237,9 +234,7 @@ def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
                     cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                     df_p = df_p[df_p['o_dt'] >= cutoff]
                 
-                # 罚款计算
                 if not df_p.empty and not tasks_df.empty:
-                    # 获取全量任务副本来算罚款基数
                     df_t_base = tasks_df[(tasks_df['assignee'] == username) & (tasks_df['status'] == '完成')].copy()
                     if not df_t_base.empty:
                         df_t_base['c_dt'] = pd.to_datetime(df_t_base['completed_at'], errors='coerce')
@@ -249,7 +244,6 @@ def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
                         for _, pen in df_p.iterrows():
                             if pd.isna(pen['o_dt']): continue
                             w_start = pen['o_dt'] - pd.Timedelta(days=7)
-                            # 筛选罚款那一周的任务
                             w_tasks = df_t_base[(df_t_base['c_dt'] >= w_start) & (df_t_base['c_dt'] <= pen['o_dt'])]
                             total_fine += w_tasks['val'].sum() * 0.2
         
@@ -266,7 +260,6 @@ def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
 
         return round(gross - total_fine + total_reward, 2)
     except Exception as e:
-        # 兜底：如果算错了，返回0，不让系统崩
         print(f"Error calculating YVP for {username}: {e}")
         return 0.0
 
@@ -290,7 +283,7 @@ def calculate_period_stats(start_date, end_date):
                     in_range = df_t[(df_t['c_dt'] >= ts_start) & (df_t['c_dt'] <= ts_end)]
                     gross = in_range[in_range['is_rnd']==False].apply(lambda x: safe_float(x.get('difficulty')) * safe_float(x.get('std_time')) * safe_float(x.get('quality')), axis=1).sum()
             
-            fine = 0.0 # 简化报表中的罚款展示，避免复杂逻辑拖慢报表
+            fine = 0.0
             
             reward_val = 0.0
             if not rews.empty:
@@ -1096,14 +1089,14 @@ elif nav == "🏰 个人中心":
                     if st.button("⚡️ 生成矩阵奖励"):
                         amt = tier_map[m_tier]
                         rsn = f"矩阵奖励：单篇点赞过 {m_tier.split(' ')[1]}"
-                        supabase.table("rewards").insert({"username": m_target, "amount": amt, "reason": rsn}).execute()
+                        supabase.table("rewards").insert({"username": m_target, "amount": amt, "reason": rsn, "created_at": str(datetime.datetime.now())}).execute()
                         st.success(f"已发放：{m_target} +{amt}"); force_refresh()
 
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
                 amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") 
                 reason_r = st.text_input("理由", key="rew_re")
                 if st.button("🎁 确认赏赐", type="primary", key="btn_rew"):
-                    supabase.table("rewards").insert({"username": target_r, "amount": amt_r, "reason": reason_r}).execute()
+                    supabase.table("rewards").insert({"username": target_r, "amount": amt_r, "reason": reason_r, "created_at": str(datetime.datetime.now())}).execute()
                     show_success_modal(f"已赏赐")
                 st.caption("最近记录 (可撤销/修改)")
                 rews = run_query("rewards")
