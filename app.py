@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V42.6",
+    page_title="颜祖美学·执行中枢 V42.7",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -81,7 +81,7 @@ except Exception:
     st.stop()
 
 # --- 4. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v42_6_iso_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v42_7_simple_fix")
 
 # --- 5. 核心工具函数定义 ---
 
@@ -124,7 +124,8 @@ def get_announcement():
 
 def update_announcement(text):
     supabase.table("messages").delete().eq("username", "__NOTICE__").execute()
-    supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": datetime.datetime.now().isoformat()}).execute()
+    # V42.7: 公告也移除手动时间，让DB自动生成，或仅使用最简格式
+    supabase.table("messages").insert({"username": "__NOTICE__", "content": text}).execute()
 
 def format_deadline(d_val):
     if pd.isna(d_val) or str(d_val) in ['NaT', 'None', '']:
@@ -1081,22 +1082,11 @@ elif nav == "🏰 个人中心":
                             supabase.table("penalties").delete().eq("id", int(p['id'])).execute(); st.rerun()
             with c_r:
                 st.markdown("#### 🎁 奖励赏赐")
-                
-                with st.expander("🎬 矩阵阶梯奖励 (快捷生成)", expanded=False):
-                    m_target = st.selectbox("账号/成员", members, key="mx_target")
-                    m_tier = st.radio("点赞量级", ["👍 1000+", "👍 5000+", "👍 1万+", "🔥 10万+", "👑 100万+"], horizontal=True)
-                    tier_map = {"👍 1000+": 1, "👍 5000+": 2, "👍 1万+": 5, "🔥 10万+": 30, "👑 100万+": 150}
-                    if st.button("⚡️ 生成矩阵奖励"):
-                        amt = tier_map[m_tier]
-                        rsn = f"矩阵奖励：单篇点赞过 {m_tier.split(' ')[1]}"
-                        supabase.table("rewards").insert({"username": m_target, "amount": float(amt), "reason": rsn, "created_at": datetime.datetime.now().isoformat()}).execute()
-                        st.success(f"已发放：{m_target} +{amt}"); force_refresh()
-
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
                 amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") 
                 reason_r = st.text_input("理由", key="rew_re")
                 if st.button("🎁 确认赏赐", type="primary", key="btn_rew"):
-                    supabase.table("rewards").insert({"username": target_r, "amount": float(amt_r), "reason": reason_r, "created_at": datetime.datetime.now().isoformat()}).execute()
+                    supabase.table("rewards").insert({"username": target_r, "amount": float(amt_r), "reason": reason_r}).execute()
                     show_success_modal(f"已赏赐")
                 st.caption("最近记录 (可撤销/修改)")
                 rews = run_query("rewards")
