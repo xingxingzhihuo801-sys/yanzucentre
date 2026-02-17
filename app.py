@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V42.7",
+    page_title="颜祖美学·执行中枢 V42.8",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -81,7 +81,7 @@ except Exception:
     st.stop()
 
 # --- 4. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v42_7_simple_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v42_8_final_fix")
 
 # --- 5. 核心工具函数定义 ---
 
@@ -124,7 +124,6 @@ def get_announcement():
 
 def update_announcement(text):
     supabase.table("messages").delete().eq("username", "__NOTICE__").execute()
-    # V42.7: 公告也移除手动时间，让DB自动生成，或仅使用最简格式
     supabase.table("messages").insert({"username": "__NOTICE__", "content": text}).execute()
 
 def format_deadline(d_val):
@@ -1086,8 +1085,29 @@ elif nav == "🏰 个人中心":
                 amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") 
                 reason_r = st.text_input("理由", key="rew_re")
                 if st.button("🎁 确认赏赐", type="primary", key="btn_rew"):
-                    supabase.table("rewards").insert({"username": target_r, "amount": float(amt_r), "reason": reason_r}).execute()
-                    show_success_modal(f"已赏赐")
+                    try:
+                        # 尝试带 ISO 时间戳
+                        now_iso = datetime.datetime.now().isoformat()
+                        supabase.table("rewards").insert({
+                            "username": target_r, 
+                            "amount": float(amt_r), 
+                            "reason": reason_r,
+                            "created_at": now_iso
+                        }).execute()
+                        show_success_modal(f"已赏赐 {target_r} {amt_r} 点")
+                    except Exception as e:
+                        st.warning(f"首选方式失败: {e}, 正在尝试备选方案...")
+                        try:
+                            # 备选：不带时间戳，让DB自动生成
+                            supabase.table("rewards").insert({
+                                "username": target_r, 
+                                "amount": float(amt_r), 
+                                "reason": reason_r
+                            }).execute()
+                            show_success_modal(f"已赏赐 (自动时间) {target_r}")
+                        except Exception as e2:
+                            st.error(f"最终写入失败。错误详情: {e2}")
+
                 st.caption("最近记录 (可撤销/修改)")
                 rews = run_query("rewards")
                 if not rews.empty:
