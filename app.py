@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V42.5",
+    page_title="颜祖美学·执行中枢 V42.6",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -81,7 +81,7 @@ except Exception:
     st.stop()
 
 # --- 4. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v42_5_reward_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v42_6_iso_fix")
 
 # --- 5. 核心工具函数定义 ---
 
@@ -124,7 +124,7 @@ def get_announcement():
 
 def update_announcement(text):
     supabase.table("messages").delete().eq("username", "__NOTICE__").execute()
-    supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": str(datetime.datetime.now())}).execute()
+    supabase.table("messages").insert({"username": "__NOTICE__", "content": text, "created_at": datetime.datetime.now().isoformat()}).execute()
 
 def format_deadline(d_val):
     if pd.isna(d_val) or str(d_val) in ['NaT', 'None', '']:
@@ -851,7 +851,7 @@ elif nav == "🗣️ 颜祖广场":
                 st.write(f"**{m['username']}**: {m['content']}")
                 st.caption(f"{m['created_at']}")
 
-# --- 4. 风云榜 (V42.0 视觉增强) ---
+# --- 4. 风云榜 ---
 elif nav == "🏆 风云榜":
     st.header("🏆 风云榜 (Live Leaderboard)")
     
@@ -1089,14 +1089,14 @@ elif nav == "🏰 个人中心":
                     if st.button("⚡️ 生成矩阵奖励"):
                         amt = tier_map[m_tier]
                         rsn = f"矩阵奖励：单篇点赞过 {m_tier.split(' ')[1]}"
-                        supabase.table("rewards").insert({"username": m_target, "amount": amt, "reason": rsn, "created_at": str(datetime.datetime.now())}).execute()
+                        supabase.table("rewards").insert({"username": m_target, "amount": float(amt), "reason": rsn, "created_at": datetime.datetime.now().isoformat()}).execute()
                         st.success(f"已发放：{m_target} +{amt}"); force_refresh()
 
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
                 amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") 
                 reason_r = st.text_input("理由", key="rew_re")
                 if st.button("🎁 确认赏赐", type="primary", key="btn_rew"):
-                    supabase.table("rewards").insert({"username": target_r, "amount": amt_r, "reason": reason_r, "created_at": str(datetime.datetime.now())}).execute()
+                    supabase.table("rewards").insert({"username": target_r, "amount": float(amt_r), "reason": reason_r, "created_at": datetime.datetime.now().isoformat()}).execute()
                     show_success_modal(f"已赏赐")
                 st.caption("最近记录 (可撤销/修改)")
                 rews = run_query("rewards")
