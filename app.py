@@ -9,7 +9,7 @@ from supabase import create_client, Client
 
 # --- 1. 系统配置 ---
 st.set_page_config(
-    page_title="颜祖美学·执行中枢 V42.9",
+    page_title="颜祖美学·执行中枢 V42.11",
     page_icon="🏛️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -18,6 +18,8 @@ st.set_page_config(
 # --- 常量定义 ---
 MATRIX_EXCLUDE_USERS = ['liujingting', 'jiangjing', 'admin']
 MATRIX_START_DATE = datetime.date(2026, 2, 11)
+MATRIX_HOLIDAY_START = datetime.date(2026, 2, 17)
+MATRIX_HOLIDAY_END = datetime.date(2026, 2, 23)
 CST_TZ = datetime.timezone(datetime.timedelta(hours=8)) # 北京时间
 
 # --- 2. CSS 美化 ---
@@ -81,7 +83,7 @@ except Exception:
     st.stop()
 
 # --- 4. Cookie 管理器 ---
-cookie_manager = stx.CookieManager(key="yanzu_v42_9_rls_fix")
+cookie_manager = stx.CookieManager(key="yanzu_v42_11_tz_fix")
 
 # --- 5. 核心工具函数定义 ---
 
@@ -115,6 +117,16 @@ def run_query(table_name):
 def force_refresh():
     st.cache_data.clear()
     st.rerun()
+
+# V42.11 核心净化器：强行剥离一切时区
+def parse_naive_datetime(series):
+    dt_series = pd.to_datetime(series, errors='coerce')
+    try:
+        # 如果带有 tz (timezone)，强行 localize(None) 剥离掉
+        if dt_series.dt.tz is not None:
+            return dt_series.dt.tz_localize(None)
+    except: pass
+    return dt_series
 
 def get_announcement():
     try:
@@ -219,7 +231,8 @@ def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
                 my_done['is_rnd'] = my_done['is_rnd'].fillna(False)
                 my_done['val'] = my_done.apply(lambda x: 0.0 if x['is_rnd'] else (safe_float(x.get('difficulty')) * safe_float(x.get('std_time')) * safe_float(x.get('quality'))), axis=1)
                 
-                my_done['c_dt'] = pd.to_datetime(my_done['completed_at'], errors='coerce')
+                # 剥离时区
+                my_done['c_dt'] = parse_naive_datetime(my_done['completed_at'])
                 if days_lookback:
                     cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                     my_done = my_done[my_done['c_dt'] >= cutoff]
@@ -229,7 +242,8 @@ def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
         if not pen_df.empty:
             df_p = pen_df[pen_df['username'] == username].copy()
             if not df_p.empty:
-                df_p['o_dt'] = pd.to_datetime(df_p['occurred_at'], errors='coerce')
+                # 剥离时区
+                df_p['o_dt'] = parse_naive_datetime(df_p['occurred_at'])
                 if days_lookback:
                     cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                     df_p = df_p[df_p['o_dt'] >= cutoff]
@@ -237,7 +251,7 @@ def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
                 if not df_p.empty and not tasks_df.empty:
                     df_t_base = tasks_df[(tasks_df['assignee'] == username) & (tasks_df['status'] == '完成')].copy()
                     if not df_t_base.empty:
-                        df_t_base['c_dt'] = pd.to_datetime(df_t_base['completed_at'], errors='coerce')
+                        df_t_base['c_dt'] = parse_naive_datetime(df_t_base['completed_at'])
                         df_t_base['is_rnd'] = df_t_base['is_rnd'].fillna(False)
                         df_t_base['val'] = df_t_base.apply(lambda x: 0.0 if x['is_rnd'] else (safe_float(x.get('difficulty')) * safe_float(x.get('std_time')) * safe_float(x.get('quality'))), axis=1)
                         
@@ -252,8 +266,9 @@ def calculate_net_yvp(username, tasks_df, pen_df, rew_df, days_lookback=None):
             df_r = rew_df[rew_df['username'] == username].copy()
             if not df_r.empty:
                 df_r['amount_val'] = df_r['amount'].apply(safe_float)
+                # 剥离时区
+                df_r['c_dt'] = parse_naive_datetime(df_r['created_at'])
                 if days_lookback:
-                    df_r['c_dt'] = pd.to_datetime(df_r['created_at'], errors='coerce')
                     cutoff = pd.Timestamp.now() - pd.Timedelta(days=days_lookback)
                     df_r = df_r[df_r['c_dt'] >= cutoff]
                 total_reward = df_r['amount_val'].sum()
@@ -271,7 +286,8 @@ def calculate_period_stats(start_date, end_date):
         tasks = run_query("tasks"); pens = run_query("penalties"); rews = run_query("rewards")
         
         stats_data = []
-        ts_start = pd.Timestamp(start_date); ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+        ts_start = pd.Timestamp(start_date)
+        ts_end = pd.Timestamp(end_date) + pd.Timedelta(days=1)
         
         for m in members:
             gross = 0.0
@@ -279,7 +295,8 @@ def calculate_period_stats(start_date, end_date):
                 df_t = tasks[(tasks['assignee'] == m) & (tasks['status'] == '完成')].copy()
                 if not df_t.empty:
                     df_t['is_rnd'] = df_t['is_rnd'].fillna(False)
-                    df_t['c_dt'] = pd.to_datetime(df_t['completed_at'], errors='coerce')
+                    # 剥离时区
+                    df_t['c_dt'] = parse_naive_datetime(df_t['completed_at'])
                     in_range = df_t[(df_t['c_dt'] >= ts_start) & (df_t['c_dt'] <= ts_end)]
                     gross = in_range[in_range['is_rnd']==False].apply(lambda x: safe_float(x.get('difficulty')) * safe_float(x.get('std_time')) * safe_float(x.get('quality')), axis=1).sum()
             
@@ -288,7 +305,8 @@ def calculate_period_stats(start_date, end_date):
             reward_val = 0.0
             if not rews.empty:
                 df_r = rews[rews['username'] == m].copy()
-                df_r['c_dt'] = pd.to_datetime(df_r['created_at'], errors='coerce')
+                # 剥离时区
+                df_r['c_dt'] = parse_naive_datetime(df_r['created_at'])
                 in_range_r = df_r[(df_r['c_dt'] >= ts_start) & (df_r['c_dt'] <= ts_end)]
                 reward_val = in_range_r['amount'].apply(safe_float).sum()
                 
@@ -296,7 +314,9 @@ def calculate_period_stats(start_date, end_date):
             stats_data.append({"成员": m, "任务产出": round(gross, 2), "罚款": round(fine, 2), "奖励": round(reward_val, 2), "💰 应发YVP": round(net, 2)})
         
         return pd.DataFrame(stats_data).sort_values("💰 应发YVP", ascending=False) if stats_data else pd.DataFrame()
-    except: return pd.DataFrame()
+    except Exception as e: 
+        st.error(f"分润统计出现异常: {e}")
+        return pd.DataFrame()
 
 @st.dialog("🎉 恭喜")
 def show_success_modal(msg="操作成功！"):
@@ -319,7 +339,8 @@ def get_or_create_matrix_battlefield():
 
 def global_matrix_task_dispatch():
     today = datetime.datetime.now(CST_TZ).date()
-    if today >= MATRIX_START_DATE and today.weekday() <= 4:
+    is_holiday = MATRIX_HOLIDAY_START <= today <= MATRIX_HOLIDAY_END
+    if today >= MATRIX_START_DATE and today.weekday() <= 4 and not is_holiday:
         today_str = str(today)
         users_df = run_query("users")
         if users_df.empty: return
@@ -345,7 +366,8 @@ def global_matrix_task_dispatch():
 
 def check_and_create_matrix_tasks(username):
     today = datetime.datetime.now(CST_TZ).date()
-    if today >= MATRIX_START_DATE and today.weekday() <= 4:
+    is_holiday = MATRIX_HOLIDAY_START <= today <= MATRIX_HOLIDAY_END
+    if today >= MATRIX_START_DATE and today.weekday() <= 4 and not is_holiday:
         today_str = str(today)
         tasks = run_query("tasks")
         task_title = f"{username} {today.month}.{today.day} 矩阵任务"
@@ -840,7 +862,7 @@ elif nav == "🗣️ 颜祖广场":
         txt = st.text_input("💬 说点什么...")
         if st.form_submit_button("发送"):
             if txt:
-                supabase.table("messages").insert({"username": user, "content": txt, "created_at": str(datetime.datetime.now())}).execute()
+                supabase.table("messages").insert({"username": user, "content": txt}).execute()
                 st.rerun()
     msgs = run_query("messages")
     if not msgs.empty:
@@ -954,7 +976,7 @@ elif nav == "🏰 个人中心":
                     st.dataframe(report, use_container_width=True, hide_index=True)
                     csv = report.to_csv(index=False).encode('utf-8')
                     st.download_button("📥 下载报表", csv, f"yvp_report.csv", "text/csv")
-                else: st.warning("无数据")
+                else: st.warning("无数据或计算报错，请检查控制台。")
 
         with tabs[2]: # 发布
             camps = run_query("campaigns")
@@ -1080,32 +1102,22 @@ elif nav == "🏰 个人中心":
                         if c2.button("🗑️", key=f"del_pen_{p['id']}"):
                             supabase.table("penalties").delete().eq("id", int(p['id'])).execute(); st.rerun()
             with c_r:
-                st.markdown("#### 🎁 奖励赏赐")
+                st.markdown("#### 🎁 手动赏赐")
                 target_r = st.selectbox("赏赐成员", members, key="rew_u")
                 amt_r = st.number_input("奖励YVP", min_value=0.0, step=0.1, key="rew_a") 
                 reason_r = st.text_input("理由", key="rew_re")
+                
                 if st.button("🎁 确认赏赐", type="primary", key="btn_rew"):
                     try:
-                        # V42.8 双重保险写入
-                        # 方案A: 尝试带ISO时间戳
-                        try:
-                            supabase.table("rewards").insert({
-                                "username": target_r, 
-                                "amount": float(amt_r), 
-                                "reason": reason_r,
-                                "created_at": datetime.datetime.now().isoformat()
-                            }).execute()
-                            show_success_modal(f"已赏赐 {target_r} {amt_r}")
-                        except Exception:
-                            # 方案B: 不带时间戳，让DB自动生成
-                            supabase.table("rewards").insert({
-                                "username": target_r, 
-                                "amount": float(amt_r), 
-                                "reason": reason_r
-                            }).execute()
-                            show_success_modal(f"已赏赐 (自动时间) {target_r}")
+                        # V42.11 强行剥离时区冲突写入
+                        supabase.table("rewards").insert({
+                            "username": target_r, 
+                            "amount": float(amt_r), 
+                            "reason": reason_r
+                        }).execute()
+                        show_success_modal(f"已赏赐 {target_r} {amt_r} 点")
                     except Exception as e:
-                        st.error(f"❌ 写入失败，请检查数据库权限或字段。\n错误信息: {e}")
+                        st.error(f"❌ 写入失败！数据库拒绝访问。请去 Supabase SQL Editor 执行: ALTER TABLE rewards DISABLE ROW LEVEL SECURITY;\n\n详细报错: {e}")
 
                 st.caption("最近记录 (可撤销/修改)")
                 rews = run_query("rewards")
